@@ -1,0 +1,374 @@
+config SLE_TEAM_SELF_ID
+    int "Fallback self node id"
+    default 1
+    range 1 254
+    help
+        Fallback node id used only when WiFi MAC cannot be read. Normal
+        builds derive the one-byte route id from the MAC address and choose
+        leader/member role at runtime from the built-in WebUI or serial CLI.
+
+config SLE_TEAM_LEADER_ID
+    int "Leader node id"
+    default 1
+    range 1 254
+
+config SLE_TEAM_TEAM_ID
+    int "Team id"
+    default 1
+    range 1 254
+
+config SLE_TEAM_CHANNEL_HASH
+    hex "SLE mesh channel hash"
+    default 0x11
+
+config SLE_TEAM_UART_BUS
+    int "UART bus for terminal CLI"
+    default 0
+
+config SLE_TEAM_UART_TXD_PIN
+    int "UART TXD pin"
+    default 21
+
+config SLE_TEAM_UART_RXD_PIN
+    int "UART RXD pin"
+    default 22
+
+config SLE_TEAM_LED_PIN
+    int "SLE activity LED GPIO"
+    default 255
+    help
+        Set to 255 to disable the legacy single-color activity LED.
+        On the v4 schematic, IO2 is CHRG and must not be driven as an LED.
+
+config SLE_TEAM_LED_ACTIVE_LOW
+    bool "SLE activity LED is active low"
+    default n
+    help
+        The tested BearPi WS63 blue user LED turns on when GPIO_2 is driven high.
+
+config SLE_TEAM_WS2812_ENABLE
+    bool "Enable v3.2 WS2812 RGB status LED"
+    default y
+    help
+        Enable the v3.2 single WS2812C RGB LED connected to RGB/IO0.
+
+config SLE_TEAM_WS2812_PIN
+    int "WS2812 RGB data GPIO"
+    default 0
+    depends on SLE_TEAM_WS2812_ENABLE
+    help
+        On SCH_Schematic1_2 v3.2, RGB is routed to WS63 IO0.
+
+config SLE_TEAM_BUZZER_ENABLE
+    bool "Enable v3.2 buzzer output"
+    default y
+    help
+        Enable BUZZ output on the v3.2 board. The default runtime policy keeps
+        the buzzer muted until SLE_TEAM_BUZZER_MUTED is disabled.
+
+config SLE_TEAM_BUZZER_PIN
+    int "Buzzer GPIO"
+    default 14
+    depends on SLE_TEAM_BUZZER_ENABLE
+    help
+        On SCH_Schematic1_2 v3.2, BUZZ is routed to WS63 IO14.
+
+config SLE_TEAM_BUZZER_ACTIVE_HIGH
+    bool "Buzzer active high"
+    default y
+    depends on SLE_TEAM_BUZZER_ENABLE
+    help
+        Set to y when BUZZER turns on at high level.
+
+config SLE_TEAM_BUZZER_MUTED
+    bool "Keep buzzer muted"
+    default y
+    depends on SLE_TEAM_BUZZER_ENABLE
+    help
+        Keep BUZZ initialized as an output but forced off. This is the safe
+        default while the hardware bring-up is focused on pin validation.
+
+config SLE_TEAM_BUZZER_AUTO_TOGGLE
+    bool "Auto toggle buzzer for diagnostics"
+    default n
+    depends on SLE_TEAM_BUZZER_ENABLE && !SLE_TEAM_BUZZER_MUTED
+    help
+        Diagnostic only. Leave disabled for normal firmware so the buzzer does
+        not sound by itself.
+
+config SLE_TEAM_GPS_ENABLE
+    bool "Enable v3.2 GPS UART pinmap"
+    default n
+    help
+        Enable the optional v3.2 GPS UART pinmap and NMEA parser for common
+        L80R/L86 modules. Product boards without a populated GPS module should
+        leave this disabled; phone/WiFi shared location can still be submitted
+        through the board HTTP /api/location endpoint.
+
+config SLE_TEAM_GPS_UART_BUS
+    int "GPS UART bus"
+    default 1
+    depends on SLE_TEAM_GPS_ENABLE
+    help
+        On SCH_Schematic1_2 v3.2, GPS uses UART1.
+
+config SLE_TEAM_GPS_UART_TXD_PIN
+    int "GPS UART TXD pin"
+    default 17
+    depends on SLE_TEAM_GPS_ENABLE
+    help
+        On SCH_Schematic1_2 v3.2, WS63 U1TX is routed to GPS RXD1.
+
+config SLE_TEAM_GPS_UART_RXD_PIN
+    int "GPS UART RXD pin"
+    default 18
+    depends on SLE_TEAM_GPS_ENABLE
+    help
+        On SCH_Schematic1_2 v3.2, WS63 U1RX is routed to GPS TXD1.
+
+config SLE_TEAM_GPS_BAUDRATE
+    int "GPS UART baud rate"
+    default 9600
+    range 1200 115200
+    depends on SLE_TEAM_GPS_ENABLE
+    help
+        Default NMEA baud rate for common L80R/L86 GPS modules.
+
+config SLE_TEAM_ADC_ENABLE
+    bool "Enable v3.2 battery ADC pinmap"
+    default y
+    help
+        Initialize ADC_CTRL, sample ADC_VBAT through the WS63 ADC driver, and
+        publish the calculated battery percentage in hello/heartbeat packets.
+
+config SLE_TEAM_ADC_CTRL_PIN
+    int "Battery ADC divider control GPIO"
+    default 5
+    depends on SLE_TEAM_ADC_ENABLE
+    help
+        On SCH_Schematic1_2 v3.2, ADC_CTRL is routed to WS63 IO05.
+
+config SLE_TEAM_ADC_VBAT_PIN
+    int "Battery ADC sense GPIO"
+    default 12
+    depends on SLE_TEAM_ADC_ENABLE
+    help
+        On SCH_Schematic1_2 v3.2, ADC_VBAT is routed to WS63 IO12.
+
+config SLE_TEAM_ADC_VBAT_CHANNEL
+    int "Battery ADC sense channel"
+    default 5
+    range 0 5
+    depends on SLE_TEAM_ADC_ENABLE
+    help
+        WS63 ADC channel map uses ADC_CHANNEL_5 for GPIO12/IO12.
+
+config SLE_TEAM_ADC_CTRL_ACTIVE_HIGH
+    bool "ADC divider control active high"
+    default y
+    depends on SLE_TEAM_ADC_ENABLE
+    help
+        The v3.2 schematic uses ADC_CTRL to enable the VBAT divider through
+        the MOS switch. Default boot state keeps the divider off.
+
+config SLE_TEAM_ADC_SAMPLE_SETTLE_MS
+    int "Battery ADC divider settle time in ms"
+    default 50
+    range 1 1000
+    depends on SLE_TEAM_ADC_ENABLE
+    help
+        Wait after enabling ADC_CTRL before sampling ADC_VBAT.
+
+config SLE_TEAM_ADC_SAMPLE_INTERVAL_S
+    int "Battery ADC sample interval in seconds"
+    default 30
+    range 1 3600
+    depends on SLE_TEAM_ADC_ENABLE
+    help
+        Periodic VBAT sampling interval while the team network is running.
+
+config SLE_TEAM_CHRG_ENABLE
+    bool "Enable TP4054 CHRG status input"
+    default y
+    help
+        Sample the TP4054 CHRG pin as a status input and publish charging/source
+        state through UART and Web status.
+
+config SLE_TEAM_CHRG_PIN
+    int "TP4054 CHRG GPIO"
+    default 2
+    depends on SLE_TEAM_CHRG_ENABLE
+    help
+        On the current board, TP4054 CHRG is routed to WS63 IO02.
+
+config SLE_TEAM_CHRG_ACTIVE_LOW
+    bool "TP4054 CHRG active low"
+    default y
+    depends on SLE_TEAM_CHRG_ENABLE
+    help
+        TP4054 CHRG is open-drain and pulls low while charging.
+
+config SLE_TEAM_CHRG_EXTERNAL_PULLUP
+    bool "TP4054 CHRG has external pull-up"
+    default y
+    depends on SLE_TEAM_CHRG_ENABLE
+    help
+        The board already pulls CHRG high externally, so firmware leaves the
+        internal pull configuration unchanged and reads the pin as GPIO input.
+
+config SLE_TEAM_ST7789_ENABLE
+    bool "Enable v3.2 ST7789 display"
+    default y
+    select SPI_SUPPORT_MASTER
+
+config SLE_TEAM_DISPLAY_USE_LVGL
+    bool "Use LVGL UI backend for ST7789 display"
+    default y
+    depends on SLE_TEAM_ST7789_ENABLE
+    help
+        Enable LVGL-based status/alert rendering on ST7789. Keep this off
+        unless your SDK image provides LVGL headers and sources.
+
+config SLE_TEAM_LVGL_DRAW_BUF_LINES
+    int "LVGL draw buffer lines for ST7789"
+    default 8
+    range 8 120
+    depends on SLE_TEAM_ST7789_ENABLE && SLE_TEAM_DISPLAY_USE_LVGL
+    help
+        Number of scanlines used by LVGL partial rendering buffer.
+        Higher value improves refresh throughput while increasing RAM usage.
+        Keep the default low so SLE central discovery has enough heap.
+
+config SLE_TEAM_ST7789_SPI_BUS
+    int "ST7789 SPI bus"
+    default 0
+    depends on SLE_TEAM_ST7789_ENABLE
+
+config SLE_TEAM_ST7789_SCLK_PIN
+    int "ST7789 SCL/SCLK pin"
+    default 7
+    depends on SLE_TEAM_ST7789_ENABLE
+
+config SLE_TEAM_ST7789_MOSI_PIN
+    int "ST7789 SDA/MOSI pin"
+    default 9
+    depends on SLE_TEAM_ST7789_ENABLE
+
+config SLE_TEAM_ST7789_CS_PIN
+    int "ST7789 CS pin"
+    default 8
+    depends on SLE_TEAM_ST7789_ENABLE
+
+config SLE_TEAM_ST7789_CS_ALWAYS_LOW
+    bool "Keep ST7789 CS output low"
+    default y
+    depends on SLE_TEAM_ST7789_ENABLE
+    help
+        Use this when the ST7789 CS input is tied to ground or the board
+        must never drive the CS net high.
+
+config SLE_TEAM_ST7789_DC_PIN
+    int "ST7789 RS/DC pin"
+    default 13
+    depends on SLE_TEAM_ST7789_ENABLE
+
+config SLE_TEAM_ST7789_RESET_PIN
+    int "ST7789 RESET pin"
+    default 10
+    depends on SLE_TEAM_ST7789_ENABLE
+
+config SLE_TEAM_ST7789_X_OFFSET
+    int "ST7789 column offset"
+    default 40
+    depends on SLE_TEAM_ST7789_ENABLE
+    help
+        Confirmed v4.4+ landscape 1.14 inch ST7789 module starts at column 40.
+        Keep this paired with WIDTH=240, HEIGHT=135, Y_OFFSET=53, MADCTL=0x60.
+
+config SLE_TEAM_ST7789_Y_OFFSET
+    int "ST7789 row offset"
+    default 53
+    depends on SLE_TEAM_ST7789_ENABLE
+    help
+        Confirmed v4.4+ landscape 1.14 inch ST7789 module starts at row 53.
+        Keep this paired with WIDTH=240, HEIGHT=135, X_OFFSET=40, MADCTL=0x60.
+
+config SLE_TEAM_ST7789_WIDTH
+    int "ST7789 visible width"
+    default 240
+    depends on SLE_TEAM_ST7789_ENABLE
+
+config SLE_TEAM_ST7789_HEIGHT
+    int "ST7789 visible height"
+    default 135
+    depends on SLE_TEAM_ST7789_ENABLE
+
+config SLE_TEAM_HEARTBEAT_INTERVAL_S
+    int "Heartbeat interval in seconds"
+    default 1
+    range 1 60
+
+config SLE_TEAM_REPORT_INTERVAL_S
+    int "Position report interval in seconds"
+    default 5
+    range 1 300
+
+config SLE_TEAM_WARN_DISTANCE_M
+    int "Warn distance in meters"
+    default 50
+    range 1 10000
+
+config SLE_TEAM_LOST_DISTANCE_M
+    int "Lost distance in meters"
+    default 80
+    range 1 10000
+
+config SLE_TEAM_HEARTBEAT_TIMEOUT_S
+    int "Heartbeat timeout in seconds"
+    default 3
+    range 1 300
+
+config SLE_TEAM_WIFI_AP_ENABLE
+    bool "Enable WiFi SoftAP coexistence smoke test"
+    default y
+    help
+        Start the local WiFi SoftAP and HTTP WebUI used for runtime role
+        selection while the SLE team network is running.
+
+config SLE_TEAM_WIFI_AP_AUTO_START
+    bool "Auto-start WiFi SoftAP and HTTP WebUI"
+    default y
+    depends on SLE_TEAM_WIFI_AP_ENABLE
+    help
+        Keep enabled for v4 unified firmware. The hosted/domain WebUI still
+        needs the board HTTP API to be reachable for one-click deployment.
+
+config SLE_TEAM_WIFI_AP_SSID
+    string "WiFi SoftAP SSID"
+    default "SLE-TEAM-V4"
+    depends on SLE_TEAM_WIFI_AP_ENABLE
+
+config SLE_TEAM_WIFI_AP_PSK
+    string "WiFi SoftAP password"
+    default "123456789"
+    depends on SLE_TEAM_WIFI_AP_ENABLE
+
+config SLE_TEAM_WIFI_AP_CHANNEL
+    int "WiFi SoftAP channel"
+    default 6
+    range 1 13
+    depends on SLE_TEAM_WIFI_AP_ENABLE
+
+config SLE_TEAM_WIFI_AP_IP_LAST
+    int "WiFi SoftAP IP last octet"
+    default 1
+    range 1 254
+    depends on SLE_TEAM_WIFI_AP_ENABLE
+
+config SUPPORT_SLE_PERIPHERAL
+    bool
+    default y
+
+config SUPPORT_SLE_CENTRAL
+    bool
+    default y

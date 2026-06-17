@@ -1,0 +1,57 @@
+{
+  "ports": {
+    "COM5": {
+      "ready": false,
+      "lvgl": true,
+      "version": true,
+      "bytes": 2859
+    },
+    "COM41": {
+      "ready": false,
+      "lvgl": true,
+      "version": true,
+      "bytes": 2859
+    },
+    "COM47": {
+      "ready": false,
+      "lvgl": true,
+      "version": true,
+      "bytes": 2859
+    },
+    "COM49": {
+      "ready": false,
+      "lvgl": true,
+      "version": true,
+      "bytes": 9903
+    },
+    "COM51": {
+      "ready": false,
+      "lvgl": true,
+      "version": true,
+      "bytes": 2937
+    },
+    "COM58": {
+      "ready": false,
+      "lvgl": true,
+      "version": true,
+      "bytes": 2855
+    }
+  },
+  "readyPorts": [],
+  "lvglPorts": [
+    "COM5",
+    "COM41",
+    "COM47",
+    "COM49",
+    "COM51",
+    "COM58"
+  ],
+  "versionPorts": [
+    "COM5",
+    "COM41",
+    "COM47",
+    "COM49",
+    "COM51",
+    "COM58"
+  ]
+}

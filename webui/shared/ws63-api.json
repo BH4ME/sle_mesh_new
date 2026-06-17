@@ -1,0 +1,20 @@
+{
+  "routes": [
+    { "path": "/api/status", "method": "GET", "kind": "json" },
+    { "path": "/api/nodes", "method": "GET", "kind": "json" },
+    { "path": "/api/events", "method": "GET", "kind": "json" },
+    { "path": "/api/pending", "method": "GET", "kind": "json" },
+    { "path": "/api/location", "method": "GET", "kind": "json" },
+    { "path": "/api/config/status", "method": "GET", "kind": "json" },
+    { "path": "/api/config/leader", "method": "GET", "kind": "json" },
+    { "path": "/api/config/member", "method": "GET", "kind": "json" },
+    { "path": "/api/config/apply", "method": "GET", "kind": "json" },
+    { "path": "/api/config/clear", "method": "GET", "kind": "json" },
+    { "path": "/api/config/reboot", "method": "GET", "kind": "json" },
+    { "path": "/api/role", "method": "GET", "kind": "redirect" },
+    { "path": "/api/pairing", "method": "GET", "kind": "redirect" },
+    { "path": "/api/member/select", "method": "GET", "kind": "redirect" },
+    { "path": "/api/member/leave", "method": "GET", "kind": "redirect" },
+    { "path": "/api/factory-reset", "method": "GET", "kind": "html" }
+  ]
+}

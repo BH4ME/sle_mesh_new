@@ -1,0 +1,12 @@
+diff --git a/src/draw/sw/lv_draw_sw_rect.c b/src/draw/sw/lv_draw_sw_rect.c
+index a1e620b..382761c 100644
+--- a/src/draw/sw/lv_draw_sw_rect.c
++++ b/src/draw/sw/lv_draw_sw_rect.c
+@@ -158,0 +159,2 @@ static void draw_bg(lv_draw_ctx_t * draw_ctx, const lv_draw_rect_dsc_t * dsc, co
++    lv_area_t center_coords;
++    bool mask_any_center = false;
+@@ -280 +281,0 @@ static void draw_bg(lv_draw_ctx_t * draw_ctx, const lv_draw_rect_dsc_t * dsc, co
+-    lv_area_t center_coords;
+@@ -285 +286 @@ static void draw_bg(lv_draw_ctx_t * draw_ctx, const lv_draw_rect_dsc_t * dsc, co
+-    bool mask_any_center = lv_draw_mask_is_any(&center_coords);
++    mask_any_center = lv_draw_mask_is_any(&center_coords);

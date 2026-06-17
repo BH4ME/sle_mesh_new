@@ -1,0 +1,47 @@
+{
+  "brand": "SLE Team",
+  "product": "WS63 Console",
+  "boardTitle": "SLE Team WS63",
+  "boardSubtitle": "192.168.43.1 local console",
+  "hostedConsoleUrl": "https://sleweb.mecho.top",
+  "defaultDeviceApiUrl": "http://192.168.43.1",
+  "boardVersion": "ssr=v6",
+  "tabs": [
+    { "id": "status", "label": "status", "href": "/" },
+    { "id": "nodes", "label": "nodes", "href": "/nodes" },
+    { "id": "events", "label": "events", "href": "/events" },
+    { "id": "json", "label": "json", "href": "/api/status" }
+  ],
+  "statusFields": [
+    { "id": "state", "label": "State" },
+    { "id": "role", "label": "Role" },
+    { "id": "self", "label": "Self" },
+    { "id": "leader", "label": "Leader" },
+    { "id": "joined", "label": "Joined" },
+    { "id": "seq", "label": "Seq" },
+    { "id": "uptime", "label": "Uptime" },
+    { "id": "transport", "label": "Transport" },
+    { "id": "link", "label": "Link" }
+  ],
+  "nodeFields": [
+    { "id": "node", "label": "Node" },
+    { "id": "battery", "label": "Battery" },
+    { "id": "rssi", "label": "RSSI" },
+    { "id": "seq", "label": "Seq" }
+  ],
+  "empty": {
+    "nodes": "No member joined leader yet.",
+    "events": "No team events yet."
+  },
+  "palette": {
+    "pageBg": "#f6f7f9",
+    "text": "#16181d",
+    "headerBg": "#101820",
+    "cardBg": "#ffffff",
+    "border": "#dde1e7",
+    "muted": "#68707d",
+    "ok": "#087443",
+    "bad": "#b42318",
+    "warn": "#9a5b00"
+  }
+}

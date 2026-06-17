@@ -1,0 +1,23 @@
+config BLINKY_USE_LITEOS
+    bool "Use LiteOS task version"
+    default y
+    help
+        Enable the LiteOS task-based implementation instead of the CMSIS thread version.
+
+config BLINKY_PIN
+    int "Blink LED GPIO"
+    default 2
+    help
+        BearPi-Pico H3863 official tutorial uses GPIO_2 for the onboard user LED.
+
+config BLINKY_DURATION_MS
+    int "Blink interval (ms)"
+    default 500
+    help
+        LED toggle interval in milliseconds.
+
+config BLINKY_ACTIVE_LOW
+    bool "LED is active low"
+    default y
+    help
+        Most official tutorial wiring for the onboard LED uses low to turn it on.
