@@ -2,7 +2,6 @@
 
 This directory contains the STL files kept for the handoff repository.
 
-- `stl/hardware/...` contains the current hardware enclosure STL files that also live near the hardware documentation.
 - `stl/models/...` contains only the latest three versioned enclosure model sets:
   - `sle_enclosure_v2.1.13_no_screen_no_battery`
   - `sle_enclosure_v2.1.14_transparent_insert`
