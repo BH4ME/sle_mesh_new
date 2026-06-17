@@ -8,6 +8,11 @@
 - `boards/`：预留给 PCB、Gerber、BOM、装配图和板卡 3D 模型。
 - `schematics/`：预留给原理图、接口定义和硬件审查记录。
 
+## 当前硬件资料
+
+- [boards/sle-main-board/v3.3](boards/sle-main-board/v3.3/)：2026-06-16 SLE 主板 PCB PDF 和板卡预览图。
+- [schematics/sle-main-board/v3.3](schematics/sle-main-board/v3.3/)：2026-06-16 SLE 主板原理图 PDF。
+
 ## 版本规则
 
 - 每个可制造硬件版本放在独立目录，例如 `hardware/enclosures/sle-pcb-enclosure/v1.1.4/`。

@@ -5,6 +5,7 @@
 ## 当前资料
 
 - [sle-main-board/v0.1](sle-main-board/v0.1/)：早期 SLE 主板原理图参考。
+- [sle-main-board/v3.3](sle-main-board/v3.3/)：2026-06-16 SLE 主板原理图 PDF。
 
 建议按硬件版本保存，例如：
 
