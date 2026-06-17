@@ -15,7 +15,7 @@ Current packaged line: `v4.5.46-minimal`
 | Build tools | `scripts/build/`, `automation/ws63/tools/ws63_remote_build_v4.py` | Local/remote SDK build wrappers and post-build guards. |
 | Debug/test automation | `automation/ws63/`, `scripts/sim/`, `examples/` | Serial probes, version audit, relay recovery hardware tests, simulator and C regressions. |
 | Hardware docs | `hardware/`, `docs/` | Board/enclosure documentation, schematics notes, task book, and repository docs. |
-| CAD STL models | `cad/stl/` | All STL models copied from the active CAD/model tree for printing/review. |
+| CAD STL models | `cad/stl/` | Retained hardware enclosure STLs plus only the latest three versioned enclosure model sets. |
 | Release firmware | `release/firmware/` | Latest known built package for direct flashing. |
 | Release evidence | `release/evidence/` | Compact JSON summaries for the latest display and relay-recovery hardware proof. |
 

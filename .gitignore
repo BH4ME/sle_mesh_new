@@ -35,8 +35,8 @@ findings.md
 progress.md
 
 # Large generated CAD/cache formats kept out by default.
-models/
-3D/
+/models/
+/3D/
 *.glb
 *.step
 *.stp
