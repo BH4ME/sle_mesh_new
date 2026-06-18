@@ -2,7 +2,7 @@ param(
     [string[]]$Ports = @("COM16", "COM13", "COM17", "COM18"),
     [string]$Firmware = "",
     [string]$Python = "",
-    [string]$ExpectedVersion = "v4.5.56-minimal",
+    [string]$ExpectedVersion = "v4.5.64-minimal",
     [switch]$Parallel,
     [string]$LogRoot = "",
     [int]$Baudrate = 115200,

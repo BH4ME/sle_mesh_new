@@ -1502,7 +1502,7 @@ void sle_team_node_tick(sle_team_node_t *node)
     if (node->joined != 0U && node->cfg.heartbeat_interval_s != 0U &&
         (node->last_heartbeat_s == 0U || (uint32_t)(now_s - node->last_heartbeat_s) >= node->cfg.heartbeat_interval_s)) {
         (void)sle_team_node_send_heartbeat(node, node->cfg.leader_id,
-            sle_team_battery_percent(node), sle_team_rssi_dbm(node), 1U);
+            sle_team_battery_percent(node), sle_team_rssi_dbm(node), 0U);
         node->last_heartbeat_s = now_s;
     }
 }
@@ -1601,7 +1601,7 @@ int sle_team_node_send_heartbeat(sle_team_node_t *node, uint8_t dst_id, uint8_t 
 }
 static int sle_team_send_leader_heartbeat(sle_team_node_t *node, uint8_t member_id)
 {
-    return sle_team_node_send_heartbeat(node, member_id, 100U, SLE_TEAM_RSSI_UNKNOWN, 1U);
+    return sle_team_node_send_heartbeat(node, member_id, 100U, SLE_TEAM_RSSI_UNKNOWN, 0U);
 }
 int sle_team_node_send_position(sle_team_node_t *node, uint8_t dst_id, const sle_team_pos_body_t *pos)
 {

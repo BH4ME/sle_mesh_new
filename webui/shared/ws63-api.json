@@ -5,6 +5,7 @@
     { "path": "/api/events", "method": "GET", "kind": "json" },
     { "path": "/api/pending", "method": "GET", "kind": "json" },
     { "path": "/api/location", "method": "GET", "kind": "json" },
+    { "path": "/api/gps", "method": "GET", "kind": "json" },
     { "path": "/api/config/status", "method": "GET", "kind": "json" },
     { "path": "/api/config/leader", "method": "GET", "kind": "json" },
     { "path": "/api/config/member", "method": "GET", "kind": "json" },

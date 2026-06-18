@@ -8,7 +8,7 @@ from automation.ws63.tools import ws63_remote_build_v4 as rb
 from automation.ws63.tools.ws63_route_id import route_id_from_suffix
 
 
-EXPECTED_VERSION = "v4.5.56-minimal"
+EXPECTED_VERSION = "v4.5.64-minimal"
 RETIRED_ACTIVE_TOKENS = [
     "TEAM_LEADER_NET_STAGE",
     "team_leader_topology_",
@@ -145,10 +145,10 @@ class FourBoardRelayUnitTest(unittest.TestCase):
 
     def test_leader_runtime_fallback_accepts_configured_log_when_cfg_json_is_malformed(self):
         text = (
-            "[team] configured fw=v4.5.56-minimal role=leader self=170 leader=170 "
+            "[team] configured fw=v4.5.64-minimal role=leader self=170 leader=170 "
             "team=24 channel=63 direct_cap=3 term=2 label=L2283\n"
             "[cfg] leader-now ret=0 team=24 channel=63 self_suffix=2283\n"
-            '[cfg-json] {"ok":true,"fw":"v4.5.56-minimal","nvRolyTarget":0}\n'
+            '[cfg-json] {"ok":true,"fw":"v4.5.64-minimal","nvRolyTarget":0}\n'
         )
 
         status = fb._leader_runtime_from_config_log(
@@ -167,7 +167,7 @@ class FourBoardRelayUnitTest(unittest.TestCase):
 
     def test_leader_runtime_fallback_defaults_missing_term_for_old_logs(self):
         text = (
-            "[team] configured fw=v4.5.56-minimal role=leader self=170 leader=170 "
+            "[team] configured fw=v4.5.64-minimal role=leader self=170 leader=170 "
             "team=24 channel=63 direct_cap=3 label=L2283\n"
             "[cfg] leader-now ret=0 team=24 channel=63 self_suffix=2283\n"
         )
@@ -185,7 +185,7 @@ class FourBoardRelayUnitTest(unittest.TestCase):
 
     def test_leader_runtime_fallback_requires_leader_now_success(self):
         text = (
-            "[team] configured fw=v4.5.56-minimal role=leader self=170 leader=170 "
+            "[team] configured fw=v4.5.64-minimal role=leader self=170 leader=170 "
             "team=24 channel=63 direct_cap=3 label=L2283\n"
         )
 
@@ -314,6 +314,7 @@ class FourBoardRelayUnitTest(unittest.TestCase):
         node_header = self._read("include/sle_team_node.h")
         cli_source = self._read("src/sle_team_cli.c")
         client_source = self._read("xc/ws63_team_network/sle_uart_client/sle_uart_client.c")
+        client_header = self._read("xc/ws63_team_network/sle_uart_client/sle_uart_client.h")
         server_source = self._read("xc/ws63_team_network/sle_uart_server/sle_uart_server.c")
         status_led_source = self._read("xc/ws63_team_network/src/ws63_team_status_led.c")
         ws2812_source = self._read("xc/ws63_team_network/src/ws63_ws2812.c")
@@ -323,7 +324,7 @@ class FourBoardRelayUnitTest(unittest.TestCase):
         cmake_source = self._read("xc/ws63_team_network/CMakeLists.txt")
 
         self.assertIn(f'#define SLE_TEAM_FW_VERSION "{EXPECTED_VERSION}"', app_source)
-        self.assertIn("#define SLE_TEAM_FW_COMPAT 0x0556U", app_source)
+        self.assertIn("#define SLE_TEAM_FW_COMPAT 0x0564U", app_source)
         self.assertIn("cfg.fw_compat = (uint16_t)SLE_TEAM_FW_COMPAT;", app_source)
         self.assertIn("team_fw_compat_from_adv_data", app_source)
         self.assertIn("fw_compat != SLE_TEAM_FW_COMPAT", app_source)
@@ -340,7 +341,7 @@ class FourBoardRelayUnitTest(unittest.TestCase):
         self.assertEqual(self._extract_define_int(app_source, "SLE_TEAM_DIRECT_CAP_DEFAULT"), 7)
         self.assertEqual(self._extract_define_int(node_source, "SLE_TEAM_DIRECT_CAP_DEFAULT"), 7)
         self.assertEqual(self._extract_define_int(node_source, "SLE_TEAM_RELAY_CHILD_CAP_DEFAULT"), 7)
-        self.assertLessEqual(len(app_source.splitlines()), 2600)
+        self.assertLessEqual(len(app_source.splitlines()), 2700)
         self.assertLessEqual(len(node_source.splitlines()), 2200)
         self.assertIn('#include "ws63_st7789_display.h"', app_source)
         self.assertIn("#define SLE_TEAM_DISPLAY_TASK_STACK_SIZE 0x1800", app_source)
@@ -368,6 +369,19 @@ class FourBoardRelayUnitTest(unittest.TestCase):
         self.assertIn("ws63_st7789_show_status", st7789_source)
         self.assertIn("ws63_st7789_show_event", st7789_source)
         self.assertIn("ws63_st7789_tick", st7789_source)
+        self.assertIn("#define CONFIG_SLE_TEAM_ST7789_DC_PIN 10", app_source)
+        self.assertIn("#define CONFIG_SLE_TEAM_ST7789_RESET_PIN 13", app_source)
+        self.assertIn("#define CONFIG_SLE_TEAM_ST7789_CS_ALWAYS_LOW 0", st7789_source)
+        self.assertIn("#define ST7789_SOFT_SPI_ENABLE 0", st7789_source)
+        self.assertIn("idle-high settle_ms", st7789_source)
+        self.assertNotIn("held-low", st7789_source)
+        self.assertNotIn("ST7789_CS_LOW_SETTLE_MS", st7789_source)
+        self.assertIn("uapi_spi_init(g_st7789_cfg.spi_bus", st7789_source)
+        self.assertIn("uapi_spi_master_write(g_st7789_cfg.spi_bus", st7789_source)
+        self.assertIn("hardware spi enabled", st7789_source)
+        self.assertIn("LVGL gives host-endian RGB565; ST7789 SPI wants high byte first", st7789_source)
+        self.assertIn("SCLK/MOSI are handed to the SDK SPI controller by uapi_spi_init", st7789_source)
+        self.assertNotIn("st7789_soft_spi_write_u8", st7789_source)
         self.assertIn("sle_team_relay_optimizer_run", optimizer_source)
         self.assertNotIn("sle_team_leader_migration", app_source)
         self.assertNotIn("leader migrate plan", app_source)
@@ -391,20 +405,46 @@ class FourBoardRelayUnitTest(unittest.TestCase):
         self.assertIn("<span class=\\\"v\\\">%s fix=%u sat=%u lat=%ld lon=%ld speed=%u heading=%u</span>", http_source)
         self.assertIn("no fix fix=%u sat=%u", http_source)
         self.assertIn("adv.hidden_ssid_flag = 1U", http_source)
+        self.assertIn("TEAM_HTTP_WIFI_SECURITY_PRIMARY", http_source)
+        self.assertIn("TEAM_HTTP_WIFI_PROTOCOL_PRIMARY", http_source)
         self.assertIn("TEAM_HTTP_WIFI_SECURITY_COMPAT_MIX", http_source)
         self.assertIn("TEAM_HTTP_WIFI_PROTOCOL_COMPAT_AX", http_source)
-        self.assertIn("conf.security_type = TEAM_HTTP_WIFI_SECURITY_COMPAT_MIX", http_source)
-        self.assertIn("adv.protocol_mode = TEAM_HTTP_WIFI_PROTOCOL_COMPAT_AX", http_source)
-        self.assertIn("softap enable failed ret=0x%x with mix/ax, fallback to wpa2+11bgn", http_source)
-        self.assertIn("TEAM_HTTP_WIFI_SECURITY_FALLBACK", http_source)
-        self.assertIn("TEAM_HTTP_WIFI_PROTOCOL_FALLBACK", http_source)
+        self.assertIn("conf.security_type = TEAM_HTTP_WIFI_SECURITY_PRIMARY", http_source)
+        self.assertIn("adv.protocol_mode = TEAM_HTTP_WIFI_PROTOCOL_PRIMARY", http_source)
+        self.assertIn("softap enable failed ret=0x%x with wpa2+11bgn, fallback to mix/ax", http_source)
+        self.assertIn("fallback.protocol_mode = TEAM_HTTP_WIFI_PROTOCOL_COMPAT_AX", http_source)
+        self.assertIn("team_http_append_topology", http_source)
+        self.assertIn("Online Nodes", http_source)
+        self.assertIn("Relay Nodes", http_source)
+        self.assertIn("onlineNodeCount", http_source)
+        self.assertIn("relayNodeCount", http_source)
+        self.assertIn("onlineNodeCount", self._read("src/sle_team_web_api.c"))
+        self.assertIn("relayNodeCount", self._read("src/sle_team_web_api.c"))
+        self.assertIn("team_web_event(SLE_TEAM_WEB_EVENT_SYSTEM", app_source)
+        self.assertIn("team_web_event(SLE_TEAM_WEB_EVENT_RX", app_source)
+        self.assertIn("member joined", app_source)
+        self.assertIn("relay offline", app_source)
+        self.assertIn("member hello", app_source)
         self.assertIn('#include "ws63_team_power.h"', app_source)
         self.assertIn("ws63_team_power_init();", app_source)
         self.assertIn("ws63_team_power_tick(0U);", app_source)
         self.assertIn("ws63_team_power_cli_handle(msg.line)", app_source)
         self.assertIn("return ws63_team_power_battery_percent();", app_source)
         self.assertIn("ws63_team_gps_tick(&g_team_node, now_ms, team_battery_percent(NULL));", app_source)
+        self.assertIn("team_gps_cli_handle(msg.line)", app_source)
+        self.assertIn('strcmp(line, "gps status") == 0', app_source)
+        self.assertIn("[gps] %s", app_source)
+        self.assertIn("ws63_team_gps_tick(&g_team_node, (uint32_t)uapi_tcxo_get_ms(), team_battery_percent(NULL));", app_source)
         self.assertIn("sle_team_pos_body_t pos = {0};", self._read("xc/ws63_team_network/src/ws63_team_gps.c"))
+        gps_source = self._read("xc/ws63_team_network/src/ws63_team_gps.c")
+        gps_header = self._read("xc/ws63_team_network/src/ws63_team_gps.h")
+        self.assertIn("ws63_team_gps_get_status", gps_source)
+        self.assertIn("ws63_team_gps_set_fallback_position", gps_source)
+        self.assertIn("valid_sentences", gps_header)
+        self.assertIn("fix_sentences", gps_header)
+        self.assertIn("no_fix_sentences", gps_header)
+        self.assertIn("format_errors", gps_header)
+        self.assertIn("if (sle_team_node_record_local_position(node, &g_gps.last_pos) == SLE_TEAM_OK)", gps_source)
         self.assertIn("return SLE_TEAM_ERR_FORMAT;", self._read("src/sle_team_nmea.c"))
         self.assertIn('#include "adc.h"', power_source)
         self.assertIn('#include "adc_porting.h"', power_source)
@@ -570,6 +610,10 @@ class FourBoardRelayUnitTest(unittest.TestCase):
         self.assertIn("SLE_UART_CONNECT_INFLIGHT_TIMEOUT_MS", client_source)
         self.assertIn("SLE_UART_FORCE_RESCAN_MIN_INTERVAL_MS", client_source)
         self.assertIn("SLE_UART_SEEK_SAMPLE_LOG_INTERVAL_MS", client_source)
+        self.assertIn("uint8_t sle_uart_client_scan_busy(void);", client_header)
+        self.assertIn("uint8_t sle_uart_client_scan_busy(void)", client_source)
+        self.assertIn("if (sle_uart_client_scan_busy() != 0U)", app_source)
+        self.assertIn("return g_sle_uart_conn_num < sle_uart_client_effective_connect_limit()", client_source)
         self.assertGreaterEqual(self._extract_define_int(app_source, "SLE_TEAM_LEADER_RESCAN_INTERVAL_MS"), 3000)
         self.assertGreaterEqual(self._extract_define_int(client_source, "SLE_UART_FORCE_RESCAN_MIN_INTERVAL_MS"), 2500)
         self.assertGreaterEqual(self._extract_define_int(client_source, "SLE_UART_SEEK_SAMPLE_LOG_INTERVAL_MS"), 8000)
@@ -584,6 +628,18 @@ class FourBoardRelayUnitTest(unittest.TestCase):
         self.assertIn("sle_uart_client_mark_conn_ready(conn_id, \"property-discovery\")", client_source)
         self.assertIn("conn == NULL || conn->ready == 0U", client_source)
         self.assertIn("sle_uart_client_exchange_once(conn_id, \"send-not-ready\")", client_source)
+        leader_scan_policy = app_source.split("static void team_leader_update_scan_policy(void)", 1)[1].split(
+            "static uint8_t team_route_id_from_suffix", 1
+        )[0]
+        self.assertLess(
+            leader_scan_policy.index("sle_uart_client_scan_busy()"),
+            leader_scan_policy.index("sle_uart_client_force_rescan();"),
+        )
+        force_rescan_body = client_source.split("void sle_uart_client_force_rescan(void)", 1)[1].split(
+            "void sle_uart_client_pause_scan_request", 1
+        )[0]
+        self.assertNotIn("sle_stop_seek", force_rescan_body)
+        self.assertIn("force rescan skipped: seek active", force_rescan_body)
         self.assertNotIn("leader skip route=%u relay_recovery_pending=1 selected", app_source)
         self.assertNotIn("leader skip route=%u relay_recovery_pending=1 candidate=0", app_source)
         self.assertNotIn("leader skip route=%u known_relay_child=1", app_source)
@@ -603,10 +659,18 @@ class FourBoardRelayUnitTest(unittest.TestCase):
         self.assertIn("earlier v4.5.39 breathing profile", status_led_source)
         self.assertIn("status_led_apply_scaled", status_led_source)
         self.assertIn("status_led_scale_u8", status_led_source)
-        self.assertIn("status_led_apply_scaled(255U, 96U, 0U, scale)", status_led_source)
+        self.assertIn("status_led_apply_scaled(255U, 0U, 80U, scale)", status_led_source)
         self.assertIn("status_led_apply_scaled(160U, 0U, 255U, scale)", status_led_source)
-        self.assertIn("status_led_apply_scaled(0U, 96U, 255U, scale)", status_led_source)
+        self.assertIn("status_led_apply_scaled(0U, 0U, 255U, scale)", status_led_source)
+        self.assertIn("status_led_apply_scaled(255U, 0U, 32U, scale)", status_led_source)
+        self.assertIn("status_led_apply_scaled(32U, 0U, 255U, scale)", status_led_source)
+        self.assertNotRegex(status_led_source, r"status_led_apply_scaled\(\s*\d+U,\s*(?!0U\b)\d+U,")
         self.assertNotIn("status_led_apply_scaled(0U, 255U, 32U, scale)", status_led_source)
+        self.assertIn("ws63_team_status_led_hold_low", status_led_source)
+        self.assertIn("g_status_led.hold_low", status_led_source)
+        self.assertIn("ws63_ws2812_hold_low();", status_led_source)
+        self.assertIn("Diagnostic mode: send one all-black frame", status_led_source)
+        self.assertIn("ws63_team_status_led_hold_low_active", status_led_source)
         self.assertNotIn("ST7789_COLOR_GREEN", st7789_source)
         self.assertIn("case WS63_ST7789_EVENT_JOIN:\n        case WS63_ST7789_EVENT_REJOIN:\n            return ST7789_COLOR_CYAN;", st7789_source)
         position_handler = app_source.split("static void team_on_position", 1)[1].split(
@@ -630,7 +694,33 @@ class FourBoardRelayUnitTest(unittest.TestCase):
         self.assertIn("ws63_ws2812_calibrate_timing", ws2812_source)
         self.assertNotIn("WS63_WS2812_BOOT_TEST_MS", ws2812_source)
         self.assertIn("Start from a dark latch", ws2812_source)
+        self.assertIn("#define WS63_WS2812_RESET_US 320U", ws2812_source)
+        self.assertIn("#define WS63_WS2812_T0H_NS 350U", ws2812_source)
+        self.assertIn("#define WS63_WS2812_T1H_NS 700U", ws2812_source)
+        self.assertIn("#define WS63_WS2812_PIN_DRIVE PIN_DS_7", ws2812_source)
+        self.assertNotIn("WS63_WS2812_FRAME_REPEATS", ws2812_source)
+        self.assertNotIn("WS63_WS2812_RECALIBRATE_EACH_FRAME", ws2812_source)
+        self.assertNotIn("ws63_ws2812_prepare_pin_low", ws2812_source)
+        self.assertIn("ws63_ws2812_encode_frame", ws2812_source)
+        self.assertIn("ws63_ws2812_hold_low", ws2812_source)
+        self.assertIn("WS2812B-XF01/W uses the common WS2812 GRB wire order", ws2812_source)
+        self.assertIn("Keep the bus quiet", ws2812_source)
+        self.assertIn("not add more retries", ws2812_source)
+        self.assertIn("uapi_pin_set_ds(pin, WS63_WS2812_PIN_DRIVE)", ws2812_source)
+        self.assertNotIn("PIN_DS_3", ws2812_source)
         self.assertNotIn("WS63_WS2812_CPU_MHZ", ws2812_source)
+        self.assertNotIn("color_cached", status_led_source)
+        self.assertNotIn("g_status_led.last_red == red", status_led_source)
+        self.assertNotIn("last_green", status_led_source)
+
+        self.assertIn('strcmp(line, "led off") == 0', app_source)
+        self.assertIn('strcmp(line, "led hold-low") == 0', app_source)
+        self.assertIn('strcmp(line, "led on") == 0', app_source)
+        self.assertIn('strcmp(line, "led status") == 0', app_source)
+        self.assertLess(app_source.index("team_gps_cli_handle(msg.line)"), app_source.index("team_cfg_cli_handle(msg.line)"))
+        self.assertLess(app_source.index("team_led_cli_handle(msg.line)"), app_source.index("team_cfg_cli_handle(msg.line)"))
+        self.assertNotIn("SLE_TEAM_RSSI_UNKNOWN, 1U", node_source)
+        self.assertNotIn("sle_team_rssi_dbm(node), 1U", node_source)
 
     def test_build_and_flash_contracts_use_minimal_version(self):
         remote_build = self._read("automation/ws63/tools/ws63_remote_build_v4.py")
@@ -654,17 +744,26 @@ class FourBoardRelayUnitTest(unittest.TestCase):
         self.assertIn('"sle_team_nmea_parse_line"', remote_build)
         self.assertIn('"sle_team_nmea_feed"', remote_build)
         self.assertIn('"ws63_ws2812_set_rgb"', remote_build)
+        self.assertIn('"ws63_ws2812_encode_frame"', remote_build)
         self.assertIn('"static const ws63_team_http_callbacks_t g_team_http_callbacks"', remote_build)
         self.assertIn('"ws63_team_http_start(&g_team_node, &g_team_events, &g_team_http_callbacks"', remote_build)
         self.assertIn("'\"SLE-%02X%02X\"'", remote_build)
         self.assertIn('"adv.hidden_ssid_flag = 1U"', remote_build)
+        self.assertIn('"TEAM_HTTP_WIFI_SECURITY_PRIMARY"', remote_build)
+        self.assertIn('"TEAM_HTTP_WIFI_PROTOCOL_PRIMARY"', remote_build)
         self.assertIn('"TEAM_HTTP_WIFI_SECURITY_COMPAT_MIX"', remote_build)
         self.assertIn('"TEAM_HTTP_WIFI_PROTOCOL_COMPAT_AX"', remote_build)
-        self.assertIn('"conf.security_type = TEAM_HTTP_WIFI_SECURITY_COMPAT_MIX"', remote_build)
-        self.assertIn('"adv.protocol_mode = TEAM_HTTP_WIFI_PROTOCOL_COMPAT_AX"', remote_build)
-        self.assertIn('"softap enable failed ret=0x%x with mix/ax, fallback to wpa2+11bgn"', remote_build)
-        self.assertIn('"TEAM_HTTP_WIFI_SECURITY_FALLBACK"', remote_build)
-        self.assertIn('"TEAM_HTTP_WIFI_PROTOCOL_FALLBACK"', remote_build)
+        self.assertIn('"conf.security_type = TEAM_HTTP_WIFI_SECURITY_PRIMARY"', remote_build)
+        self.assertIn('"adv.protocol_mode = TEAM_HTTP_WIFI_PROTOCOL_PRIMARY"', remote_build)
+        self.assertIn('"softap enable failed ret=0x%x with wpa2+11bgn, fallback to mix/ax"', remote_build)
+        self.assertIn('"team_http_append_topology"', remote_build)
+        self.assertIn('web_api_source_path = sdk / "third_party/sle_mesh/src/sle_team_web_api.c"', remote_build)
+        self.assertIn('web_api_source = web_api_source_path.read_text(errors="replace")', remote_build)
+        self.assertIn('"team_web_event(SLE_TEAM_WEB_EVENT_SYSTEM"', remote_build)
+        self.assertIn('"team_web_event(SLE_TEAM_WEB_EVENT_RX"', remote_build)
+        self.assertIn('set_kconfig_value(s, "CONFIG_SLE_TEAM_ST7789_CS_ALWAYS_LOW", "n")', remote_build)
+        self.assertIn('set_kconfig_value(s, "CONFIG_SLE_TEAM_ST7789_DC_PIN", "10")', remote_build)
+        self.assertIn('set_kconfig_value(s, "CONFIG_SLE_TEAM_ST7789_RESET_PIN", "13")', remote_build)
         self.assertNotIn('unset_kconfig_bool(s, "CONFIG_SLE_TEAM_GPS_ENABLE")', remote_build)
         for script in (local_wsl, ubuntu):
             self.assertIn("next_archive_path()", script)
@@ -682,17 +781,26 @@ class FourBoardRelayUnitTest(unittest.TestCase):
             self.assertIn('"sle_team_nmea_parse_line"', script)
             self.assertIn('"sle_team_nmea_feed"', script)
             self.assertIn('"ws63_ws2812_set_rgb"', script)
+            self.assertIn('"ws63_ws2812_encode_frame"', script)
             self.assertIn('"static const ws63_team_http_callbacks_t g_team_http_callbacks"', script)
             self.assertIn('"ws63_team_http_start(&g_team_node, &g_team_events, &g_team_http_callbacks"', script)
             self.assertIn("'\"SLE-%02X%02X\"'", script)
             self.assertIn('"adv.hidden_ssid_flag = 1U"', script)
+            self.assertIn('"TEAM_HTTP_WIFI_SECURITY_PRIMARY"', script)
+            self.assertIn('"TEAM_HTTP_WIFI_PROTOCOL_PRIMARY"', script)
             self.assertIn('"TEAM_HTTP_WIFI_SECURITY_COMPAT_MIX"', script)
             self.assertIn('"TEAM_HTTP_WIFI_PROTOCOL_COMPAT_AX"', script)
-            self.assertIn('"conf.security_type = TEAM_HTTP_WIFI_SECURITY_COMPAT_MIX"', script)
-            self.assertIn('"adv.protocol_mode = TEAM_HTTP_WIFI_PROTOCOL_COMPAT_AX"', script)
-            self.assertIn('"softap enable failed ret=0x%x with mix/ax, fallback to wpa2+11bgn"', script)
-            self.assertIn('"TEAM_HTTP_WIFI_SECURITY_FALLBACK"', script)
-            self.assertIn('"TEAM_HTTP_WIFI_PROTOCOL_FALLBACK"', script)
+            self.assertIn('"conf.security_type = TEAM_HTTP_WIFI_SECURITY_PRIMARY"', script)
+            self.assertIn('"adv.protocol_mode = TEAM_HTTP_WIFI_PROTOCOL_PRIMARY"', script)
+            self.assertIn('"softap enable failed ret=0x%x with wpa2+11bgn, fallback to mix/ax"', script)
+            self.assertIn('"team_http_append_topology"', script)
+            self.assertIn('web_api_source_path = sdk / "third_party/sle_mesh/src/sle_team_web_api.c"', script)
+            self.assertIn('web_api_source = web_api_source_path.read_text(errors="replace")', script)
+            self.assertIn('"team_web_event(SLE_TEAM_WEB_EVENT_SYSTEM"', script)
+            self.assertIn('"team_web_event(SLE_TEAM_WEB_EVENT_RX"', script)
+            self.assertIn('set_kconfig_value(s, "CONFIG_SLE_TEAM_ST7789_CS_ALWAYS_LOW", "n")', script)
+            self.assertIn('set_kconfig_value(s, "CONFIG_SLE_TEAM_ST7789_DC_PIN", "10")', script)
+            self.assertIn('set_kconfig_value(s, "CONFIG_SLE_TEAM_ST7789_RESET_PIN", "13")', script)
             self.assertNotIn('unset_kconfig_bool(s, "CONFIG_SLE_TEAM_GPS_ENABLE")', script)
         self.assertIn(f'[string]$ExpectedVersion = "{EXPECTED_VERSION}"', multi_flash)
         self.assertIn(f'DEFAULT_EXPECTED_FW_VERSION = "{EXPECTED_VERSION}"', auto_burn)

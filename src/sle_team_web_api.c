@@ -86,6 +86,51 @@ static void json_append_mac_fields(sle_team_json_writer_t *writer, const uint8_t
         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], mac[4], mac[5]);
 }
 
+static uint8_t web_status_online_node_count(const sle_team_node_t *node)
+{
+    uint8_t i;
+    uint8_t count = 0U;
+
+    if (node == NULL) {
+        return 0U;
+    }
+    if (node->cfg.role == SLE_TEAM_ROLE_LEADER) {
+        count = 1U;
+        for (i = 0U; i < SLE_TEAM_MAX_MEMBERS; i++) {
+            if (node->members[i].online != 0U) {
+                count++;
+            }
+        }
+        return count;
+    }
+    if (node->cfg.role == SLE_TEAM_ROLE_MEMBER) {
+        return node->joined != 0U ? 1U : 0U;
+    }
+    return 0U;
+}
+
+static uint8_t web_status_relay_node_count(const sle_team_node_t *node)
+{
+    uint8_t i;
+    uint8_t count = 0U;
+
+    if (node == NULL) {
+        return 0U;
+    }
+    if (node->cfg.role == SLE_TEAM_ROLE_LEADER) {
+        for (i = 0U; i < SLE_TEAM_MAX_MEMBERS; i++) {
+            if (node->members[i].online != 0U && node->members[i].relay_allowed != 0U) {
+                count++;
+            }
+        }
+        return count;
+    }
+    if (node->cfg.role == SLE_TEAM_ROLE_MEMBER) {
+        return (node->joined != 0U && (node->cfg.relay_enabled != 0U || node->cfg.relay_allowed != 0U)) ? 1U : 0U;
+    }
+    return 0U;
+}
+
 const char *sle_team_web_role_name(uint8_t role)
 {
     return role == (uint8_t)SLE_TEAM_ROLE_LEADER ? "leader" : "member";
@@ -218,7 +263,9 @@ int sle_team_web_write_status_json(const sle_team_node_t *node, uint32_t uptime_
     for (i = 0U; i < node->cfg.allowed_member_count && i < SLE_TEAM_MAX_MEMBERS; i++) {
         json_append(&writer, "%s%u", i == 0U ? "" : ",", node->cfg.allowed_member_ids[i]);
     }
-    json_append(&writer, "]");
+    json_append(&writer,
+        "],\"onlineNodeCount\":%u,\"relayNodeCount\":%u",
+        web_status_online_node_count(node), web_status_relay_node_count(node));
     json_append(&writer, "}");
     return writer.truncated != 0 ? SLE_TEAM_ERR_BUF : (int)writer.used;
 }
@@ -278,12 +325,50 @@ int sle_team_web_write_nodes_json(const sle_team_node_t *node, char *out, size_t
 
     json_append(&writer, "[");
     /*
+     * A member's local Web/AP page does not own the leader member table, so
+     * expose a self row first. Without this, member /api/nodes is empty even
+     * while the board is joined and useful.
+     */
+    if (node->cfg.role == SLE_TEAM_ROLE_MEMBER) {
+        const sle_team_member_record_t *self = sle_team_node_find_member(node, node->cfg.self_id);
+        uint8_t self_position_valid = self != NULL ? self->position_valid : 0U;
+        uint8_t self_fix_status = self != NULL ? self->fix_status : 0U;
+        uint8_t self_battery = self != NULL ? self->battery_percent : 0U;
+        uint8_t self_sat_count = self != NULL ? self->sat_count : 0U;
+        int32_t self_latitude_e6 = self != NULL ? self->latitude_e6 : 0;
+        int32_t self_longitude_e6 = self != NULL ? self->longitude_e6 : 0;
+        uint16_t self_speed_cms = self != NULL ? self->speed_cms : 0U;
+        uint16_t self_heading_deg = self != NULL ? self->heading_deg : 0U;
+        uint32_t self_last_seen_s = self != NULL ? self->last_seen_s : 0U;
+        json_append(&writer,
+            "{\"id\":%u,\"role\":\"member\",\"self\":true,\"online\":%s,"
+            "\"policyPending\":false,\"batteryPercent\":%u,\"fixStatus\":%u,",
+            node->cfg.self_id, node->joined != 0U ? "true" : "false", self_battery, self_fix_status);
+        json_append_mac_fields(&writer, node->cfg.self_mac, node->cfg.self_mac_ready);
+        json_append(&writer,
+            ",\"positionValid\":%s,\"latitudeE6\":%ld,\"longitudeE6\":%ld,"
+            "\"speedCms\":%u,\"headingDeg\":%u,\"satCount\":%u,\"lastRssiDbm\":null,"
+            "\"relayAllowed\":%s,\"relayTier\":%u,\"maxDownstream\":%u,"
+            "\"parentId\":%u,\"nextHopId\":%u,\"childCount\":0,"
+            "\"lastSeq\":%u,\"lastSeenS\":%lu}",
+            self_position_valid != 0U ? "true" : "false",
+            (long)self_latitude_e6, (long)self_longitude_e6,
+            self_speed_cms, self_heading_deg, self_sat_count,
+            node->cfg.relay_allowed != 0U ? "true" : "false", node->cfg.relay_tier,
+            node->cfg.max_downstream, node->upstream_parent_id, node->upstream_parent_id,
+            node->next_seq, (unsigned long)self_last_seen_s);
+        wrote = 1U;
+    }
+    /*
      * Keep offline records in the JSON if they still have pending policy or a
      * last-known position. The Web UI needs that to show lost nodes on the map.
      */
     for (i = 0U; i < SLE_TEAM_MAX_MEMBERS; i++) {
         const sle_team_member_record_t *member = &node->members[i];
         if (member->online == 0U && member->policy_pending == 0U && member->position_valid == 0U) {
+            continue;
+        }
+        if (node->cfg.role == SLE_TEAM_ROLE_MEMBER && member->member_id == node->cfg.self_id) {
             continue;
         }
         if (wrote != 0U) {

@@ -6,6 +6,7 @@
 #include "securec.h"
 #include "soc_osal.h"
 #include "sle_team_nmea.h"
+#include "tcxo.h"
 #include "uart.h"
 
 #ifndef CONFIG_SLE_TEAM_GPS_ENABLE
@@ -27,12 +28,15 @@
 /*
  * GPS helper for the board app.
  *
- * The UART ISR feeds NMEA bytes into the parser, the parser caches the latest
- * valid fix, and the networking task periodically publishes that fix to the
- * leader only when the local node is a joined member.
+ * The UART ISR feeds NMEA bytes into the parser, and the main task keeps a
+ * board-local GPS cache even before the node joins a mesh. Upstream POS_REPORT
+ * transmission stays gated by member join state.
  */
 #define WS63_TEAM_GPS_RX_BUF_SIZE 256U
 #define WS63_TEAM_GPS_LINE_SIZE 96U
+#define WS63_TEAM_GPS_SOURCE_NONE 0U
+#define WS63_TEAM_GPS_SOURCE_NMEA 1U
+#define WS63_TEAM_GPS_SOURCE_FALLBACK 2U
 
 typedef struct {
     uint8_t rx_buf[WS63_TEAM_GPS_RX_BUF_SIZE];
@@ -41,7 +45,24 @@ typedef struct {
     sle_team_nmea_state_t nmea;
     sle_team_pos_body_t last_pos;
     uint8_t ready;
+    uint8_t enabled;
+    uint8_t has_sentence;
     uint8_t has_fix;
+    uint8_t source;
+    uint8_t local_recorded;
+    int last_parse_ret;
+    uint32_t rx_bytes;
+    uint32_t rx_chunks;
+    uint32_t line_count;
+    uint32_t valid_sentences;
+    uint32_t fix_sentences;
+    uint32_t no_fix_sentences;
+    uint32_t format_errors;
+    uint32_t overflow_errors;
+    uint32_t unsupported_sentences;
+    uint32_t last_rx_ms;
+    uint32_t last_sentence_ms;
+    uint32_t last_fix_ms;
     uint32_t last_report_ms;
 } ws63_team_gps_state_t;
 
@@ -57,19 +78,53 @@ static void gps_rx_cb(const void *buffer, uint16_t length, bool error)
     uint16_t i;
 
     if (error || data == NULL) {
+        g_gps.format_errors++;
         return;
     }
+    g_gps.rx_chunks++;
+    g_gps.rx_bytes += (uint32_t)length;
+    g_gps.last_rx_ms = (uint32_t)uapi_tcxo_get_ms();
     /* UART callback receives arbitrary byte chunks, not complete NMEA lines.
      * Feed bytes one at a time; the parser returns SLE_TEAM_OK only when a
      * complete supported sentence has produced a position body. */
     for (i = 0U; i < length; i++) {
         sle_team_pos_body_t pos = {0};
+        size_t before_len = g_gps.line_len;
         int ret = sle_team_nmea_feed(&g_gps.nmea, (char)data[i], g_gps.line_buf,
             sizeof(g_gps.line_buf), &g_gps.line_len, &pos);
 
-        if (ret == SLE_TEAM_OK && pos.fix_status != 0U) {
+        if ((data[i] == (uint8_t)'\r' || data[i] == (uint8_t)'\n') && before_len != 0U) {
+            g_gps.line_count++;
+            g_gps.last_sentence_ms = (uint32_t)uapi_tcxo_get_ms();
+        }
+        if (ret == SLE_TEAM_OK) {
+            g_gps.valid_sentences++;
+            g_gps.has_sentence = 1U;
+            g_gps.last_parse_ret = ret;
             g_gps.last_pos = pos;
-            g_gps.has_fix = 1U;
+            g_gps.source = WS63_TEAM_GPS_SOURCE_NMEA;
+            g_gps.local_recorded = 0U;
+            g_gps.has_fix = pos.fix_status != 0U ? 1U : 0U;
+            if (pos.fix_status != 0U) {
+                g_gps.fix_sentences++;
+                g_gps.last_fix_ms = (uint32_t)uapi_tcxo_get_ms();
+            } else {
+                g_gps.no_fix_sentences++;
+            }
+        } else if (ret == SLE_TEAM_ERR_BUF) {
+            g_gps.overflow_errors++;
+            g_gps.last_parse_ret = ret;
+        } else if (ret == SLE_TEAM_ERR_UNSUPPORTED) {
+            g_gps.unsupported_sentences++;
+            g_gps.has_sentence = 1U;
+            g_gps.last_parse_ret = ret;
+        } else if ((data[i] == (uint8_t)'\r' || data[i] == (uint8_t)'\n') &&
+            before_len != 0U && ret != SLE_TEAM_ERR_FORMAT) {
+            g_gps.last_parse_ret = ret;
+        } else if ((data[i] == (uint8_t)'\r' || data[i] == (uint8_t)'\n') &&
+            before_len != 0U && ret == SLE_TEAM_ERR_FORMAT) {
+            g_gps.format_errors++;
+            g_gps.last_parse_ret = ret;
         }
     }
 }
@@ -94,6 +149,7 @@ void ws63_team_gps_init(void)
     /* GPS is optional hardware. When enabled, this task only initializes UART
      * and caches the latest fix; network transmission happens from tick(). */
     (void)memset_s(&g_gps, sizeof(g_gps), 0, sizeof(g_gps));
+    g_gps.enabled = 1U;
     sle_team_nmea_init(&g_gps.nmea);
     (void)uapi_pin_set_mode(CONFIG_SLE_TEAM_GPS_UART_TXD_PIN, PIN_MODE_1);
     (void)uapi_pin_set_mode(CONFIG_SLE_TEAM_GPS_UART_RXD_PIN, PIN_MODE_1);
@@ -115,10 +171,20 @@ void ws63_team_gps_init(void)
 
 void ws63_team_gps_tick(sle_team_node_t *node, uint32_t now_ms, uint8_t battery_percent)
 {
-    /* Members periodically report their latest valid GPS fix to the leader.
-     * Leaders do not send GPS upstream, and no packet is sent before a fix. */
-    if (node == NULL || g_gps.ready == 0U || g_gps.has_fix == 0U ||
-        node->cfg.role != SLE_TEAM_ROLE_MEMBER || node->joined == 0U ||
+    /*
+     * First update the board-local record so the AP can show GPS before join.
+     * Only the second half sends upstream telemetry, and only for joined members.
+     */
+    if (node == NULL || g_gps.ready == 0U || g_gps.has_sentence == 0U) {
+        return;
+    }
+    g_gps.last_pos.battery_percent = battery_percent;
+    if (g_gps.local_recorded == 0U) {
+        if (sle_team_node_record_local_position(node, &g_gps.last_pos) == SLE_TEAM_OK) {
+            g_gps.local_recorded = 1U;
+        }
+    }
+    if (g_gps.has_fix == 0U || node->cfg.role != SLE_TEAM_ROLE_MEMBER || node->joined == 0U ||
         node->cfg.report_interval_s == 0U) {
         return;
     }
@@ -127,6 +193,53 @@ void ws63_team_gps_tick(sle_team_node_t *node, uint32_t now_ms, uint8_t battery_
         return;
     }
     g_gps.last_report_ms = now_ms;
-    g_gps.last_pos.battery_percent = battery_percent;
     (void)sle_team_node_send_position(node, node->cfg.leader_id, &g_gps.last_pos);
+}
+
+void ws63_team_gps_get_status(ws63_team_gps_status_t *status)
+{
+    if (status == NULL) {
+        return;
+    }
+    (void)memset_s(status, sizeof(*status), 0, sizeof(*status));
+    status->enabled = g_gps.enabled;
+    status->ready = g_gps.ready;
+    status->has_sentence = g_gps.has_sentence;
+    status->has_fix = g_gps.has_fix;
+    status->source = g_gps.source;
+    status->last_fix_status = g_gps.last_pos.fix_status;
+    status->last_sat_count = g_gps.last_pos.sat_count;
+    status->last_parse_ret = g_gps.last_parse_ret;
+    status->rx_bytes = g_gps.rx_bytes;
+    status->rx_chunks = g_gps.rx_chunks;
+    status->line_count = g_gps.line_count;
+    status->valid_sentences = g_gps.valid_sentences;
+    status->fix_sentences = g_gps.fix_sentences;
+    status->no_fix_sentences = g_gps.no_fix_sentences;
+    status->format_errors = g_gps.format_errors;
+    status->overflow_errors = g_gps.overflow_errors;
+    status->unsupported_sentences = g_gps.unsupported_sentences;
+    status->last_rx_ms = g_gps.last_rx_ms;
+    status->last_sentence_ms = g_gps.last_sentence_ms;
+    status->last_fix_ms = g_gps.last_fix_ms;
+    status->latitude_e6 = g_gps.last_pos.latitude_e6;
+    status->longitude_e6 = g_gps.last_pos.longitude_e6;
+    status->speed_cms = g_gps.last_pos.speed_cms;
+    status->heading_deg = g_gps.last_pos.heading_deg;
+}
+
+void ws63_team_gps_set_fallback_position(const sle_team_pos_body_t *pos, uint32_t now_ms)
+{
+    if (pos == NULL) {
+        return;
+    }
+    g_gps.last_pos = *pos;
+    g_gps.has_sentence = 1U;
+    g_gps.has_fix = pos->fix_status != 0U ? 1U : 0U;
+    g_gps.source = WS63_TEAM_GPS_SOURCE_FALLBACK;
+    g_gps.local_recorded = 0U;
+    g_gps.last_sentence_ms = now_ms;
+    if (pos->fix_status != 0U) {
+        g_gps.last_fix_ms = now_ms;
+    }
 }

@@ -2584,8 +2584,39 @@ static void test_leader_records_local_phone_position_without_online_member(void)
     assert(record->sat_count == 0U);
     assert(record->parent_id == 0U);
     assert(record->next_hop_id == 0U);
-    assert(record->online == 0U);
+    assert(record->online != 0U);
     assert(record->relay_allowed == 0U);
+}
+
+static void test_member_records_local_phone_position_for_member_ap(void)
+{
+    test_runtime_t member_rt = {.name = "member", .now_s = 90U};
+    sle_team_node_t member;
+    sle_team_pos_body_t pos;
+    const sle_team_member_record_t *record;
+
+    test_init_node(&member, &member_rt, 2U, SLE_TEAM_ROLE_MEMBER);
+    member.joined = 1U;
+    member.upstream_parent_id = 1U;
+    (void)memset(&pos, 0, sizeof(pos));
+    pos.latitude_e6 = 39900000;
+    pos.longitude_e6 = 116300000;
+    pos.speed_cms = 21U;
+    pos.heading_deg = 45U;
+    pos.battery_percent = 76U;
+    pos.fix_status = 1U;
+    pos.sat_count = 8U;
+    assert(sle_team_node_record_local_position(&member, &pos) == SLE_TEAM_OK);
+    record = sle_team_node_find_member(&member, 2U);
+    assert(record != NULL);
+    assert(record->role == SLE_TEAM_ROLE_MEMBER);
+    assert(record->online != 0U);
+    assert(record->position_valid != 0U);
+    assert(record->latitude_e6 == 39900000);
+    assert(record->longitude_e6 == 116300000);
+    assert(record->sat_count == 8U);
+    assert(record->parent_id == 1U);
+    assert(record->next_hop_id == 1U);
 }
 
 int main(void)
@@ -2646,6 +2677,7 @@ int main(void)
     test_nmea_rmc_gga_updates_position();
     test_position_report_survives_member_offline();
     test_leader_records_local_phone_position_without_online_member();
+    test_member_records_local_phone_position_for_member_ap();
     printf("[team-node-regression] minimal pass\n");
     return 0;
 }

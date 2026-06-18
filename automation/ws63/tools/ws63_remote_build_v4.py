@@ -20,7 +20,7 @@ from pathlib import Path
 import paramiko
 
 
-VERSION = "v4.5.56-minimal"
+VERSION = "v4.5.64-minimal"
 REMOTE_PROTO_REL = "third_party/sle_mesh"
 REMOTE_APP_REL = "application/samples/products/sle_team_network"
 REMOTE_PKG_REL = "output/ws63/fwpkg/ws63-liteos-app/ws63-liteos-app_all.fwpkg"
@@ -191,9 +191,9 @@ s = set_kconfig_value(s, "CONFIG_SLE_TEAM_ST7789_SPI_BUS", "0")
 s = set_kconfig_value(s, "CONFIG_SLE_TEAM_ST7789_SCLK_PIN", "7")
 s = set_kconfig_value(s, "CONFIG_SLE_TEAM_ST7789_MOSI_PIN", "9")
 s = set_kconfig_value(s, "CONFIG_SLE_TEAM_ST7789_CS_PIN", "8")
-s = set_kconfig_value(s, "CONFIG_SLE_TEAM_ST7789_CS_ALWAYS_LOW", "y")
-s = set_kconfig_value(s, "CONFIG_SLE_TEAM_ST7789_DC_PIN", "13")
-s = set_kconfig_value(s, "CONFIG_SLE_TEAM_ST7789_RESET_PIN", "10")
+s = set_kconfig_value(s, "CONFIG_SLE_TEAM_ST7789_CS_ALWAYS_LOW", "n")
+s = set_kconfig_value(s, "CONFIG_SLE_TEAM_ST7789_DC_PIN", "10")
+s = set_kconfig_value(s, "CONFIG_SLE_TEAM_ST7789_RESET_PIN", "13")
 s = set_kconfig_value(s, "CONFIG_SLE_TEAM_ST7789_X_OFFSET", "40")
 s = set_kconfig_value(s, "CONFIG_SLE_TEAM_ST7789_Y_OFFSET", "53")
 s = set_kconfig_value(s, "CONFIG_SLE_TEAM_ST7789_WIDTH", "240")
@@ -209,7 +209,7 @@ s = set_kconfig_value(s, "CONFIG_SLE_TEAM_WIFI_AP_SSID", '"SLE"')
 s = set_kconfig_value(s, "CONFIG_SUPPORT_SLE_PERIPHERAL", "y")
 s = set_kconfig_value(s, "CONFIG_SUPPORT_SLE_CENTRAL", "y")
 path.write_text(s)
-print("configured v4.5.56-minimal WS63 minimal leader/member/relay networking")
+print("configured v4.5.64-minimal WS63 minimal leader/member/relay networking")
 '''
 
 
@@ -233,6 +233,7 @@ status_led_source_path = sdk / "application/samples/products/sle_team_network/sr
 st7789_source_path = sdk / "application/samples/products/sle_team_network/src/ws63_st7789_display.c"
 nmea_source_path = sdk / "third_party/sle_mesh/src/sle_team_nmea.c"
 proto_source_path = sdk / "third_party/sle_mesh/src/sle_team_node.c"
+web_api_source_path = sdk / "third_party/sle_mesh/src/sle_team_web_api.c"
 
 cfg = cfg_path.read_text(errors="replace")
 map_text = map_path.read_text(errors="replace")
@@ -248,8 +249,9 @@ status_led_source = status_led_source_path.read_text(errors="replace")
 st7789_source = st7789_source_path.read_text(errors="replace")
 nmea_source = nmea_source_path.read_text(errors="replace")
 proto_source = proto_source_path.read_text(errors="replace")
+web_api_source = web_api_source_path.read_text(errors="replace")
 
-VERSION = "v4.5.56-minimal"
+VERSION = "v4.5.64-minimal"
 
 def require_text(name, source, needle):
     if needle not in source:
@@ -360,6 +362,8 @@ for name, source, item in [
     ("ws63_team_network_app.c", app_source, "TeamDisplayTask"),
     ("ws63_team_network_app.c", app_source, "team_display_spawn_task();"),
     ("ws63_team_network_app.c", app_source, "ws63_st7789_init(&cfg)"),
+    ("ws63_team_network_app.c", app_source, "#define CONFIG_SLE_TEAM_ST7789_DC_PIN 10"),
+    ("ws63_team_network_app.c", app_source, "#define CONFIG_SLE_TEAM_ST7789_RESET_PIN 13"),
     ("ws63_team_network_app.c", app_source, "ws63_st7789_show_status"),
     ("ws63_team_network_app.c", app_source, "ws63_st7789_show_event"),
     ("ws63_team_network_app.c", app_source, "ws63_st7789_tick();"),
@@ -367,6 +371,10 @@ for name, source, item in [
     ("ws63_st7789_display.c", st7789_source, "ws63_st7789_show_status"),
     ("ws63_st7789_display.c", st7789_source, "ws63_st7789_show_event"),
     ("ws63_st7789_display.c", st7789_source, "ws63_st7789_tick"),
+    ("ws63_st7789_display.c", st7789_source, "#define CONFIG_SLE_TEAM_ST7789_CS_ALWAYS_LOW 0"),
+    ("ws63_st7789_display.c", st7789_source, "#define ST7789_SOFT_SPI_ENABLE 0"),
+    ("ws63_st7789_display.c", st7789_source, "hardware spi enabled"),
+    ("ws63_st7789_display.c", st7789_source, "LVGL gives host-endian RGB565; ST7789 SPI wants high byte first"),
     ("ws63_team_http.c", http_source, "/api/location"),
     ("ws63_team_http.c", http_source, "team_http_handle_location"),
     ("ws63_team_http.c", http_source, "sle_team_node_record_local_position"),
@@ -374,13 +382,21 @@ for name, source, item in [
     ("ws63_team_http.c", http_source, "<span class=\\\"v\\\">%s fix=%u sat=%u lat=%ld lon=%ld speed=%u heading=%u</span>"),
     ("ws63_team_http.c", http_source, "no fix fix=%u sat=%u"),
     ("ws63_team_http.c", http_source, "adv.hidden_ssid_flag = 1U"),
+    ("ws63_team_http.c", http_source, "TEAM_HTTP_WIFI_SECURITY_PRIMARY"),
+    ("ws63_team_http.c", http_source, "TEAM_HTTP_WIFI_PROTOCOL_PRIMARY"),
     ("ws63_team_http.c", http_source, "TEAM_HTTP_WIFI_SECURITY_COMPAT_MIX"),
     ("ws63_team_http.c", http_source, "TEAM_HTTP_WIFI_PROTOCOL_COMPAT_AX"),
-    ("ws63_team_http.c", http_source, "conf.security_type = TEAM_HTTP_WIFI_SECURITY_COMPAT_MIX"),
-    ("ws63_team_http.c", http_source, "adv.protocol_mode = TEAM_HTTP_WIFI_PROTOCOL_COMPAT_AX"),
-    ("ws63_team_http.c", http_source, "softap enable failed ret=0x%x with mix/ax, fallback to wpa2+11bgn"),
-    ("ws63_team_http.c", http_source, "TEAM_HTTP_WIFI_SECURITY_FALLBACK"),
-    ("ws63_team_http.c", http_source, "TEAM_HTTP_WIFI_PROTOCOL_FALLBACK"),
+    ("ws63_team_http.c", http_source, "conf.security_type = TEAM_HTTP_WIFI_SECURITY_PRIMARY"),
+    ("ws63_team_http.c", http_source, "adv.protocol_mode = TEAM_HTTP_WIFI_PROTOCOL_PRIMARY"),
+    ("ws63_team_http.c", http_source, "softap enable failed ret=0x%x with wpa2+11bgn, fallback to mix/ax"),
+    ("ws63_team_http.c", http_source, "fallback.protocol_mode = TEAM_HTTP_WIFI_PROTOCOL_COMPAT_AX"),
+    ("ws63_team_http.c", http_source, "team_http_append_topology"),
+    ("ws63_team_http.c", http_source, "onlineNodeCount"),
+    ("ws63_team_http.c", http_source, "relayNodeCount"),
+    ("sle_team_web_api.c", web_api_source, "onlineNodeCount"),
+    ("sle_team_web_api.c", web_api_source, "relayNodeCount"),
+    ("ws63_team_network_app.c", app_source, "team_web_event(SLE_TEAM_WEB_EVENT_SYSTEM"),
+    ("ws63_team_network_app.c", app_source, "team_web_event(SLE_TEAM_WEB_EVENT_RX"),
     ("ws63_team_gps.c", gps_source, "team_gps_init"),
     ("ws63_team_gps.c", gps_source, "sle_team_nmea_feed"),
     ("ws63_team_gps.c", gps_source, "sle_team_pos_body_t pos = {0};"),
@@ -400,8 +416,16 @@ for name, source, item in [
     ("sle_team_nmea.c", nmea_source, "return SLE_TEAM_ERR_FORMAT;"),
     ("ws63_team_status_led.c", status_led_source, "g_status_led_breathe_idle"),
     ("ws63_team_status_led.c", status_led_source, "status_led_apply_scaled"),
+    ("ws63_team_status_led.c", status_led_source, "ws63_team_status_led_hold_low"),
+    ("ws63_team_status_led.c", status_led_source, "Diagnostic mode: send one all-black frame"),
     ("ws63_ws2812.c", ws2812_source, "ws63_ws2812_set_rgb"),
-    ("ws63_ws2812.c", ws2812_source, "ws63_ws2812_encode_grb"),
+    ("ws63_ws2812.c", ws2812_source, "ws63_ws2812_hold_low"),
+    ("ws63_ws2812.c", ws2812_source, "ws63_ws2812_encode_frame"),
+    ("ws63_ws2812.c", ws2812_source, "#define WS63_WS2812_T0H_NS 350U"),
+    ("ws63_ws2812.c", ws2812_source, "#define WS63_WS2812_RESET_US 320U"),
+    ("ws63_ws2812.c", ws2812_source, "#define WS63_WS2812_PIN_DRIVE PIN_DS_7"),
+    ("ws63_ws2812.c", ws2812_source, "WS2812B-XF01/W uses the common WS2812 GRB wire order"),
+    ("ws63_ws2812.c", ws2812_source, "Keep the bus quiet"),
     ("sle_team_node.c", proto_source, "#define SLE_TEAM_DIRECT_CAP_DEFAULT 7U"),
     ("sle_team_node.c", proto_source, "#define SLE_TEAM_RELAY_CHILD_CAP_DEFAULT 7U"),
     ("sle_team_node.c", proto_source, "#define SLE_TEAM_MEMBER_HELLO_INTERVAL_S 1U"),
@@ -419,6 +443,21 @@ for name, source, item in [
     ("sle_uart_server.c", sle_server_source, "sle_uart_server_send_report_by_conn"),
 ]:
     require_text(name, source, item)
+
+for bad_ws2812_token in [
+    "WS63_WS2812_FRAME_REPEATS",
+    "WS63_WS2812_RECALIBRATE_EACH_FRAME",
+    "ws63_ws2812_prepare_pin_low",
+    "PIN_DS_3",
+]:
+    reject_text("ws63_ws2812.c", ws2812_source, bad_ws2812_token)
+for bad_status_token in [
+    "color_cached",
+    "last_red",
+    "last_green",
+    "last_blue",
+]:
+    reject_text("ws63_team_status_led.c", status_led_source, bad_status_token)
 
 retired_tokens = [
     "TEAM_LEADER_NET_STAGE",
@@ -453,7 +492,7 @@ reject_text("TeamNetworkTask body", network_task_body, "ws63_st7789_tick();")
 
 app_lines = len(app_source.splitlines())
 node_lines = len(proto_source.splitlines())
-if app_lines > 2600 or node_lines > 2200:
+if app_lines > 2700 or node_lines > 2200:
     raise SystemExit(f"post-build guard failed: minimal sources grew too large app={app_lines} node={node_lines}")
 
 print(f"post-build guard passed: {VERSION} minimal networking app_lines={app_lines} node_lines={node_lines}")

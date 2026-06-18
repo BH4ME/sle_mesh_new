@@ -1349,7 +1349,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--child1-port", default="COM17")
     parser.add_argument("--child2-port", default="COM18")
     parser.add_argument("--baudrate", type=int, default=115200)
-    parser.add_argument("--expected-fw", default="v4.5.56-minimal")
+    parser.add_argument("--expected-fw", default="v4.5.64-minimal")
     parser.add_argument("--team-id", type=int, default=1)
     parser.add_argument("--channel", type=int, default=17)
     parser.add_argument("--direct-cap", type=int, default=1)

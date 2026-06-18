@@ -1,47 +1,33 @@
-# Build products
-/build/
-out/
-dist/
-cmake-build-*/
 *.o
-*.obj
+*.out
 *.elf
 *.bin
 *.map
-*.out
-
-# Python / test cache
+*.log
+logs/
+$logPath
+.planning/
+meta/review_feedback.md
+3D/
+_schem_review/
+models/
+claude/
+v4claude/
+v3.pdf
+vm-preseed/
+.DS_Store
+.cxresume_sessions*
+*冲突副本*
+*Mac.lan*
+build/
+out/
+cmake-build-*/
+node_modules/
+dist/
+.vercel/
 __pycache__/
 *.py[cod]
 .pytest_cache/
-.venv/
-venv/
-
-# Web tooling
-node_modules/
-.vite/
-coverage/
-.vercel/
-
-# Runtime logs and local state
-logs/
-*.log
-*.tmp
-*.bak
-local/
-.planning/
-task_plan.md
-findings.md
-progress.md
-
-# Large generated CAD/cache formats kept out by default.
-/models/
-/3D/
-*.glb
-*.step
-*.stp
-
-# OS/editor noise
-.DS_Store
-Thumbs.db
-*.swp
+.tooling/
+output_from_vm/
+local

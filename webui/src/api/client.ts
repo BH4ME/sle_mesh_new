@@ -146,12 +146,10 @@ export class HttpTeamApi implements TeamApi {
 
   send(command: SendCommand): Promise<TeamEvent> {
     if (command.type === "position") {
-      const lat = ((command.latitudeE6 ?? 0) / 1_000_000).toFixed(6);
-      const lon = ((command.longitudeE6 ?? 0) / 1_000_000).toFixed(6);
       return fetchAction(
         `${this.baseUrl}/api/location?${qs({
-          lat,
-          lon,
+          lat: command.latitudeE6 ?? 0,
+          lon: command.longitudeE6 ?? 0,
           dst: command.dstId,
           speed: command.speedCms ?? 0,
           heading: command.headingDeg ?? 0,
@@ -165,7 +163,7 @@ export class HttpTeamApi implements TeamApi {
         direction: "tx",
         type: "POS_REPORT",
         dstId: command.dstId,
-        summary: `phone location lat=${lat} lon=${lon}`,
+        summary: `phone location lat=${command.latitudeE6 ?? 0} lon=${command.longitudeE6 ?? 0}`,
       }));
     }
     return fetchJson(`${this.baseUrl}/api/send`, {

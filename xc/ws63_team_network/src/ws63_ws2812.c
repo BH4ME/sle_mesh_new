@@ -19,13 +19,14 @@
 #define WS63_WS2812_T0H_NS 350U
 #define WS63_WS2812_T1H_NS 700U
 #define WS63_WS2812_SLOT_NS 1250U
+#define WS63_WS2812_PIN_DRIVE PIN_DS_7
 
 /*
  * Raw WS2812 bit-banged driver.
  *
- * WS2812 LEDs are timing-sensitive and expect bytes in GRB order. We bypass
- * slow GPIO APIs during the data waveform by writing GPIO set/clear registers
- * directly and keeping interrupts locked for the 24-bit frame.
+ * WS2812 LEDs are timing-sensitive. We bypass slow GPIO APIs during the data
+ * waveform by writing GPIO set/clear registers directly and keeping
+ * interrupts locked for the 24-bit frame.
  */
 typedef struct {
     volatile uint32_t *set_reg;
@@ -126,12 +127,13 @@ static void ws63_ws2812_write_byte(uint8_t value)
 }
 #endif
 
-void ws63_ws2812_encode_grb(uint8_t red, uint8_t green, uint8_t blue, uint8_t out[3])
+void ws63_ws2812_encode_frame(uint8_t red, uint8_t green, uint8_t blue, uint8_t out[3])
 {
-    /* WS2812 wire order is green, red, blue, not RGB. */
     if (out == 0) {
         return;
     }
+    /* WS2812B-XF01/W uses the common WS2812 GRB wire order. Keep this isolated
+     * so hardware-order changes cannot leak into status colors. */
     out[0] = green;
     out[1] = red;
     out[2] = blue;
@@ -149,7 +151,7 @@ int ws63_ws2812_init(uint8_t pin)
     }
 
     (void)uapi_pin_set_mode(pin, HAL_PIO_FUNC_GPIO);
-    (void)uapi_pin_set_ds(pin, PIN_DS_7);
+    (void)uapi_pin_set_ds(pin, WS63_WS2812_PIN_DRIVE);
     (void)uapi_pin_set_pull(pin, PIN_PULL_TYPE_DISABLE);
     if (uapi_gpio_set_dir(pin, GPIO_DIRECTION_OUTPUT) != ERRCODE_SUCC) {
         return -1;
@@ -180,8 +182,14 @@ int ws63_ws2812_set_rgb(uint8_t red, uint8_t green, uint8_t blue)
         return -1;
     }
 
-    ws63_ws2812_encode_grb(red, green, blue, encoded);
-    /* Interrupts are locked only around the short 24-bit waveform. */
+    ws63_ws2812_encode_frame(red, green, blue, encoded);
+    /*
+     * Keep the bus quiet: one short, locked waveform per visible color change.
+     * The rejected retry path reconfigured IO0, recalibrated, and repeated frames
+     * on every refresh; hardware showed that extra activity made green flicker
+     * faster. If green appears with semantic green=0, the safest software
+     * response is to minimize DIN transitions, not add more retries.
+     */
     irq_sts = osal_irq_lock();
     ws63_ws2812_write_byte(encoded[0]);
     ws63_ws2812_write_byte(encoded[1]);
@@ -195,6 +203,21 @@ int ws63_ws2812_set_rgb(uint8_t red, uint8_t green, uint8_t blue)
 int ws63_ws2812_clear(void)
 {
     return ws63_ws2812_set_rgb(0U, 0U, 0U);
+}
+
+int ws63_ws2812_hold_low(void)
+{
+    uint32_t irq_sts;
+
+    if (g_ws2812.ready == 0U) {
+        return -1;
+    }
+
+    irq_sts = osal_irq_lock();
+    ws63_ws2812_pin_low();
+    osal_irq_restore(irq_sts);
+    (void)uapi_tcxo_delay_us(WS63_WS2812_RESET_US);
+    return 0;
 }
 
 uint8_t ws63_ws2812_is_ready(void)

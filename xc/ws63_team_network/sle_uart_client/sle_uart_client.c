@@ -132,13 +132,27 @@ static uint8_t sle_uart_client_effective_connect_limit(void)
 
 static uint8_t sle_uart_client_has_connect_capacity(void)
 {
-    uint8_t used = g_sle_uart_conn_num;
-
-    /* Reserve a slot for the peer that is between "stop seek" and "connected". */
-    if (g_sle_uart_connect_inflight != 0U && used < 0xFFU) {
-        used++;
+    /*
+     * The transport keeps only one pending remote address, so connect attempts
+     * must be serialized. Scanning for another peer while a connect is inflight
+     * can overwrite that state and needlessly pressure the BT host allocator.
+     */
+    if (g_sle_uart_connect_inflight != 0U) {
+        return 0U;
     }
-    return used < sle_uart_client_effective_connect_limit() ? 1U : 0U;
+    return g_sle_uart_conn_num < sle_uart_client_effective_connect_limit() ? 1U : 0U;
+}
+
+uint8_t sle_uart_client_scan_busy(void)
+{
+    if (g_sle_uart_scan_paused != 0U) {
+        return 0U;
+    }
+    if (g_sle_uart_seek_active != 0U || g_sle_uart_seek_stop_for_connect != 0U ||
+        g_sle_uart_connect_inflight != 0U) {
+        return 1U;
+    }
+    return 0U;
 }
 
 static void sle_uart_client_clear_connect_inflight(void)
@@ -501,7 +515,6 @@ errcode_t sle_uart_client_read_remote_rssi(void)
 
 void sle_uart_client_force_rescan(void)
 {
-    errcode_t stop_ret;
     uint32_t now_ms;
 
     if (g_sle_uart_scan_paused != 0U) {
@@ -527,14 +540,8 @@ void sle_uart_client_force_rescan(void)
         return;
     }
     if (g_sle_uart_seek_active != 0U) {
-        g_sle_uart_force_rescan_pending = 1U;
-        stop_ret = sle_stop_seek();
-        osal_printk("%s force rescan stop seek ret:0x%x\r\n", SLE_UART_CLIENT_LOG, stop_ret);
-        if (stop_ret != ERRCODE_SLE_SUCCESS) {
-            g_sle_uart_seek_active = 0U;
-            g_sle_uart_force_rescan_pending = 0U;
-            sle_uart_start_scan();
-        }
+        osal_printk("%s force rescan skipped: seek active conn:%u\r\n",
+            SLE_UART_CLIENT_LOG, g_sle_uart_conn_num);
         return;
     }
     sle_uart_start_scan();

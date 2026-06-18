@@ -19,7 +19,7 @@ class NaturalRelayLeaveRecoveryUnitTest(unittest.TestCase):
             "logs/test",
         ])
 
-        self.assertEqual(args.expected_fw, "v4.5.45-minimal")
+        self.assertEqual(args.expected_fw, "v4.5.64-minimal")
         self.assertEqual(args.drop_method, "reboot")
 
     def test_old_relay_rejoin_rejects_reclaiming_relay_role(self):

@@ -43,6 +43,8 @@ export interface TeamStatus {
   memberFilterEnabled?: boolean;
   allowedMemberCount?: number;
   allowedMembers?: number[];
+  onlineNodeCount?: number;
+  relayNodeCount?: number;
 }
 
 export interface UnconfiguredStatus {
@@ -62,6 +64,8 @@ export interface UnconfiguredStatus {
   roleRequestLeaderSuffix?: string;
   roleRequestLeaderTerm?: number;
   roleRequestLastRet?: number;
+  onlineNodeCount?: number;
+  relayNodeCount?: number;
 }
 
 export interface TeamNode {
@@ -81,6 +85,7 @@ export interface TeamNode {
   parentId?: number;
   nextHopId?: number;
   childCount?: number;
+  self?: boolean;
   lastSeq: number;
   lastSeenS: number;
   positionValid?: boolean;

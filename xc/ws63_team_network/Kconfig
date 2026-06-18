@@ -261,7 +261,7 @@ config SLE_TEAM_ST7789_CS_PIN
 
 config SLE_TEAM_ST7789_CS_ALWAYS_LOW
     bool "Keep ST7789 CS output low"
-    default y
+    default n
     depends on SLE_TEAM_ST7789_ENABLE
     help
         Use this when the ST7789 CS input is tied to ground or the board
@@ -269,12 +269,12 @@ config SLE_TEAM_ST7789_CS_ALWAYS_LOW
 
 config SLE_TEAM_ST7789_DC_PIN
     int "ST7789 RS/DC pin"
-    default 13
+    default 10
     depends on SLE_TEAM_ST7789_ENABLE
 
 config SLE_TEAM_ST7789_RESET_PIN
     int "ST7789 RESET pin"
-    default 10
+    default 13
     depends on SLE_TEAM_ST7789_ENABLE
 
 config SLE_TEAM_ST7789_X_OFFSET

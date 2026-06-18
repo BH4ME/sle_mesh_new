@@ -48,7 +48,7 @@ int sle_team_node_record_local_position(sle_team_node_t *node, const sle_team_po
 {
     sle_team_member_record_t *member;
 
-    if (node == NULL || pos == NULL || node->cfg.role != SLE_TEAM_ROLE_LEADER) {
+    if (node == NULL || pos == NULL) {
         return SLE_TEAM_ERR_ARG;
     }
     member = sle_team_location_slot(node, node->cfg.self_id);
@@ -56,11 +56,13 @@ int sle_team_node_record_local_position(sle_team_node_t *node, const sle_team_po
         return SLE_TEAM_ERR_BUF;
     }
     /*
-     * The leader can also publish its own phone/Wi-Fi/GPS fallback location.
-     * It is stored in the same table shape as member positions so the Web API
-     * can render one node list instead of special-casing the leader.
+     * The local board can publish its own phone/Wi-Fi/GPS fallback location.
+     * Store it in the same table shape as remote member positions so both
+     * leader and member AP pages can render one node list without special API
+     * routes.
      */
-    member->role = SLE_TEAM_ROLE_LEADER;
+    member->role = (uint8_t)node->cfg.role;
+    member->online = (uint8_t)(node->cfg.role == SLE_TEAM_ROLE_LEADER || node->joined != 0U ? 1U : 0U);
     member->battery_percent = pos->battery_percent;
     member->fix_status = pos->fix_status;
     if (pos->fix_status != 0U) {
@@ -71,9 +73,13 @@ int sle_team_node_record_local_position(sle_team_node_t *node, const sle_team_po
         member->heading_deg = pos->heading_deg;
     }
     member->sat_count = pos->sat_count;
-    member->parent_id = 0U;
-    member->next_hop_id = 0U;
+    member->relay_allowed = node->cfg.relay_allowed;
+    member->relay_tier = node->cfg.relay_tier;
+    member->max_downstream = node->cfg.max_downstream;
+    member->parent_id = node->cfg.role == SLE_TEAM_ROLE_MEMBER ? node->upstream_parent_id : 0U;
+    member->next_hop_id = node->cfg.role == SLE_TEAM_ROLE_MEMBER ? node->upstream_parent_id : 0U;
     member->last_seen_s = sle_team_location_now(node);
+    member->last_seq = node->next_seq;
     if (node->ops.on_position != NULL) {
         node->ops.on_position(node->ops.user_ctx, node->cfg.self_id, pos);
     }

@@ -41,6 +41,7 @@ int8_t sle_uart_client_get_last_rssi(void);
 errcode_t sle_uart_client_read_remote_rssi(void);
 uint8_t sle_uart_client_is_ready(void);
 uint16_t sle_uart_client_connected_count(void);
+uint8_t sle_uart_client_scan_busy(void);
 void sle_uart_client_force_rescan(void);
 void sle_uart_client_pause_scan_request(const char *reason);
 void sle_uart_client_pause_scan(const char *reason);

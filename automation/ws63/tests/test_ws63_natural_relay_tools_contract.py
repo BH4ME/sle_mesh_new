@@ -4,7 +4,7 @@ from pathlib import Path
 from automation.ws63.tools import ws63_multi_board_relay_recovery_test as mb
 
 
-EXPECTED_VERSION = "v4.5.45-minimal"
+EXPECTED_VERSION = "v4.5.64-minimal"
 
 
 class NaturalRelayToolsContractTest(unittest.TestCase):
@@ -56,9 +56,9 @@ class NaturalRelayToolsContractTest(unittest.TestCase):
     def test_multi_board_relay_recovery_detects_runtime_silent_boot(self):
         leader = mb.lc.Peer(name="leader", port="COMX", baudrate=115200, ser=object())
         leader.log = [
-            "APP|dbg uart init ok.\r\ndevice_main_init: 0!\r\n[team] boot fw=v4.5.45-minimal\r\n",
+            f"APP|dbg uart init ok.\r\ndevice_main_init: 0!\r\n[team] boot fw={EXPECTED_VERSION}\r\n",
             "[team] configured role=leader\r\n",
-            "APP|dbg uart init ok.\r\ndevice_main_init: 0!\r\n[team] boot fw=v4.5.45-minimal route=166\r\n",
+            f"APP|dbg uart init ok.\r\ndevice_main_init: 0!\r\n[team] boot fw={EXPECTED_VERSION} route=166\r\n",
         ]
 
         events = mb._find_leader_crash_events(leader, log_start=1)

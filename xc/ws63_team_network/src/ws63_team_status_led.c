@@ -46,6 +46,7 @@ typedef struct {
     uint8_t ready;
     uint8_t mode;
     uint8_t applied;
+    uint8_t hold_low;
     uint32_t last_tick_ms;
     uint8_t phase_index;
 } ws63_team_status_led_t;
@@ -86,15 +87,19 @@ static void status_led_show_mode(uint8_t mode, uint8_t phase)
         phase = 0U;
     }
     /* The LED is a quick human-readable status channel:
-     * - idle: dim white breathe
-     * - leader: warm amber, deliberately far from the relay purple
+     * - idle: dim blue breathe
+     * - leader: red/pink, deliberately far from the relay purple
      * - relay/member: purple/blue family; normal states deliberately avoid
      *   bright green because the physical LEDs made green look like an overlay.
-     * - joining/lost: warmer alert colors */
+     * - joining/lost: red-family alert colors
+     *
+     * All semantic states keep the logical green channel at zero. If the board
+     * still flashes green, the root cause is below this table: WS2812 waveform,
+     * latch, or electrical coupling on the data line. */
     switch (mode) {
         case TEAM_LED_MODE_LEADER:
             scale = g_status_led_breathe_normal[phase];
-            status_led_apply_scaled(255U, 96U, 0U, scale);
+            status_led_apply_scaled(255U, 0U, 80U, scale);
             break;
         case TEAM_LED_MODE_RELAY:
             scale = g_status_led_breathe_normal[phase];
@@ -103,11 +108,11 @@ static void status_led_show_mode(uint8_t mode, uint8_t phase)
         case TEAM_LED_MODE_CHILD:
         case TEAM_LED_MODE_MEMBER:
             scale = g_status_led_breathe_normal[phase];
-            status_led_apply_scaled(0U, 96U, 255U, scale);
+            status_led_apply_scaled(0U, 0U, 255U, scale);
             break;
         case TEAM_LED_MODE_JOINING:
             scale = g_status_led_breathe_alert[phase];
-            status_led_apply_scaled(255U, 160U, 0U, scale);
+            status_led_apply_scaled(255U, 0U, 32U, scale);
             break;
         case TEAM_LED_MODE_LOST:
             scale = g_status_led_breathe_alert[phase];
@@ -116,13 +121,16 @@ static void status_led_show_mode(uint8_t mode, uint8_t phase)
         case TEAM_LED_MODE_IDLE:
         default:
             scale = g_status_led_breathe_idle[phase];
-            status_led_apply_scaled(255U, 255U, 255U, scale);
+            status_led_apply_scaled(32U, 0U, 255U, scale);
             break;
     }
 }
 
 static void status_led_set_mode(uint8_t mode, uint8_t immediate)
 {
+    if (g_status_led.hold_low != 0U) {
+        return;
+    }
     if (g_status_led.applied != 0U && g_status_led.mode == mode) {
         return;
     }
@@ -190,12 +198,43 @@ void ws63_team_status_led_off(void)
     status_led_apply(0U, 0U, 0U);
 }
 
+void ws63_team_status_led_hold_low(uint8_t enable)
+{
+#if CONFIG_SLE_TEAM_WS2812_ENABLE
+    if (enable != 0U) {
+        g_status_led.hold_low = 1U;
+        g_status_led.applied = 0U;
+        /*
+         * Diagnostic mode: send one all-black frame, then stop status refreshes
+         * and keep DIN low. If green still flashes, it is not caused by the
+         * status-color table or periodic WS2812 frames.
+         */
+        status_led_apply(0U, 0U, 0U);
+        (void)ws63_ws2812_hold_low();
+        return;
+    }
+    g_status_led.hold_low = 0U;
+    g_status_led.applied = 0U;
+#else
+    (void)enable;
+#endif
+}
+
+uint8_t ws63_team_status_led_hold_low_active(void)
+{
+    return g_status_led.hold_low;
+}
+
 void ws63_team_status_led_tick(uint32_t now_ms)
 {
 #if CONFIG_SLE_TEAM_WS2812_ENABLE
     /* Periodic breathe updates keep the indicator alive without adding any
      * extra protocol state. */
     if (g_status_led.ready == 0U) {
+        return;
+    }
+    if (g_status_led.hold_low != 0U) {
+        (void)ws63_ws2812_hold_low();
         return;
     }
     if ((uint32_t)(now_ms - g_status_led.last_tick_ms) < TEAM_LED_TICK_MS) {

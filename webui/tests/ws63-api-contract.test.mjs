@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
@@ -17,6 +17,9 @@ const firmwareHttpHeader = fs.existsSync(path.join(repoRoot, "xc/ws63_team_netwo
 const firmwareHttpSource = fs.existsSync(path.join(repoRoot, "xc/ws63_team_network/src/ws63_team_http.c"))
   ? readRepoText("xc/ws63_team_network/src/ws63_team_http.c")
   : "";
+const firmwareGpsSource = fs.existsSync(path.join(repoRoot, "xc/ws63_team_network/src/ws63_team_gps.c"))
+  ? readRepoText("xc/ws63_team_network/src/ws63_team_gps.c")
+  : "";
 const cliSource = readRepoText("src/sle_team_cli.c");
 const nodeHeader = readRepoText("include/sle_team_node.h");
 const nodeSource = readRepoText("src/sle_team_node.c");
@@ -25,6 +28,7 @@ const webApiSource = readRepoText("src/sle_team_web_api.c");
 const clientSource = readRepoText("webui/src/api/client.ts");
 const typesSource = readRepoText("webui/src/protocol/types.ts");
 const mainSource = readRepoText("webui/src/main.ts");
+const stylesSource = readRepoText("webui/src/styles/app.css");
 
 const activeSources = {
   "ws63_team_network_app.c": firmwareSource,
@@ -45,6 +49,7 @@ test("WS63 API contract lists the current board HTTP routes", () => {
       "/api/events",
       "/api/pending",
       "/api/location",
+      "/api/gps",
       "/api/config/status",
       "/api/config/leader",
       "/api/config/member",
@@ -61,8 +66,8 @@ test("WS63 API contract lists the current board HTTP routes", () => {
 });
 
 test("firmware exposes the minimal rewrite version and config surface", () => {
-  assert.match(firmwareSource, /#define SLE_TEAM_FW_VERSION "v4\.5\.56-minimal"/);
-  assert.match(firmwareSource, /#define SLE_TEAM_FW_COMPAT 0x0556U/);
+  assert.match(firmwareSource, /#define SLE_TEAM_FW_VERSION "v4\.5\.64-minimal"/);
+  assert.match(firmwareSource, /#define SLE_TEAM_FW_COMPAT 0x0564U/);
   assert.match(firmwareSource, /team_fw_compat_from_adv_data/);
   assert.match(firmwareSource, /drop rejected hello/);
   assert.match(firmwareSource, /#define SLE_TEAM_HW_CONSTRAINTS "minimal leader\/member\/relay rewrite"/);
@@ -97,8 +102,25 @@ test("webui exposes node locations and phone GPS fallback", () => {
   assert.match(mainSource, /navigator\.geolocation/);
   assert.match(mainSource, /satCount: readNumber\(form, "satCount"\)/);
   assert.match(clientSource, /api\/location/);
+  assert.match(clientSource, /lat: command\.latitudeE6/);
+  assert.match(clientSource, /lon: command\.longitudeE6/);
   assert.match(clientSource, /sat: command\.satCount/);
   assert.match(typesSource, /satCount\?: number/);
+});
+
+test("webui renders live topology and polls board APIs frequently", () => {
+  assert.match(mainSource, /renderTopologyPanel/);
+  assert.match(mainSource, /onlineNodeCount/);
+  assert.match(mainSource, /relayNodeCount/);
+  assert.match(mainSource, /topologyLeaderLabel/);
+  assert.match(mainSource, /updates every 2s/);
+  assert.match(mainSource, /window\.setInterval[\s\S]*}, 2000\)/);
+  assert.match(mainSource, /window\.setInterval[\s\S]*}, 5000\)/);
+  assert.match(stylesSource, /\.topology-graph/);
+  assert.match(stylesSource, /\.topology-node\.relay/);
+  assert.match(typesSource, /self\?: boolean/);
+  assert.match(typesSource, /onlineNodeCount\?: number/);
+  assert.match(typesSource, /relayNodeCount\?: number/);
 });
 
 test("active firmware implements the board location HTTP route", () => {
@@ -107,12 +129,54 @@ test("active firmware implements the board location HTTP route", () => {
   assert.match(firmwareSource, /ws63_team_http_start\(&g_team_node/);
   assert.match(firmwareHttpSource, /\/api\/location/);
   assert.match(firmwareHttpSource, /team_http_handle_location/);
+  assert.match(firmwareHttpSource, /team_http_send_gps_json_response/);
+  assert.match(firmwareHttpSource, /team_http_write_gps_json/);
+  assert.match(firmwareHttpSource, /ws63_team_gps_get_status/);
+  assert.match(firmwareHttpSource, /ws63_team_gps_set_fallback_position/);
+  assert.doesNotMatch(firmwareHttpSource, /role_not_ready/);
   assert.match(firmwareCmake, /sle_team_location\.c/);
   assert.match(nodeHeader, /sle_team_node_record_local_position/);
   assert.match(firmwareHttpSource, /sle_team_node_record_local_position/);
   assert.match(firmwareHttpSource, /sle_team_node_send_position/);
   assert.match(firmwareHttpSource, /sle_team_web_write_status_json/);
   assert.match(firmwareHttpSource, /sle_team_web_write_nodes_json/);
+  assert.match(firmwareGpsSource, /sle_team_node_record_local_position\(node, &g_gps\.last_pos\)/);
+  assert.match(firmwareGpsSource, /valid_sentences/);
+  assert.match(firmwareGpsSource, /fix_sentences/);
+  assert.match(firmwareGpsSource, /no_fix_sentences/);
+  assert.match(firmwareGpsSource, /format_errors/);
+  assert.match(webApiSource, /const sle_team_member_record_t \*self = sle_team_node_find_member/);
+  assert.match(webApiSource, /\\"self\\":true/);
+  assert.match(webApiSource, /\\"positionValid\\":%s/);
+  assert.doesNotMatch(webApiSource, /"positionValid":false,\\"latitudeE6\\":0/);
+  assert.match(firmwareHttpSource, /team_http_make_self_member_record/);
+  assert.match(firmwareHttpSource, /team_http_append_node_rows/);
+  assert.match(firmwareHttpSource, /g_team_http\.node->cfg\.role == SLE_TEAM_ROLE_MEMBER/);
+});
+
+test("board HTTP and firmware event surfaces expose live topology state", () => {
+  assert.match(firmwareHttpSource, /TEAM_HTTP_WIFI_SECURITY_PRIMARY/);
+  assert.match(firmwareHttpSource, /TEAM_HTTP_WIFI_PROTOCOL_PRIMARY/);
+  assert.match(firmwareHttpSource, /conf\.security_type = TEAM_HTTP_WIFI_SECURITY_PRIMARY/);
+  assert.match(firmwareHttpSource, /adv\.protocol_mode = TEAM_HTTP_WIFI_PROTOCOL_PRIMARY/);
+  assert.match(firmwareHttpSource, /fallback to mix\/ax/);
+  assert.match(firmwareHttpSource, /team_http_append_topology/);
+  assert.match(firmwareHttpSource, /\|- relay/);
+  assert.match(firmwareHttpSource, /RELAY/);
+  assert.match(firmwareHttpSource, /\|-- child/);
+  assert.match(firmwareHttpSource, /top-child/);
+  assert.match(firmwareHttpSource, /Online Nodes/);
+  assert.match(firmwareHttpSource, /Relay Nodes/);
+  assert.match(firmwareHttpSource, /onlineNodeCount/);
+  assert.match(firmwareHttpSource, /relayNodeCount/);
+  assert.match(firmwareSource, /team_web_event\(SLE_TEAM_WEB_EVENT_SYSTEM/);
+  assert.match(firmwareSource, /team_web_event\(SLE_TEAM_WEB_EVENT_RX/);
+  assert.match(firmwareSource, /member joined/);
+  assert.match(firmwareSource, /relay offline/);
+  assert.match(firmwareSource, /member hello/);
+  assert.match(webApiSource, /\\"self\\":true/);
+  assert.match(webApiSource, /onlineNodeCount/);
+  assert.match(webApiSource, /relayNodeCount/);
 });
 
 test("minimal node state names replace the old staged discovery contract", () => {

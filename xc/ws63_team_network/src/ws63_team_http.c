@@ -14,6 +14,7 @@
 #include "wifi_hotspot.h"
 #include "wifi_hotspot_config.h"
 #include "ws63_console_pages.h"
+#include "ws63_team_gps.h"
 
 #include <errno.h>
 #include <stdarg.h>
@@ -48,10 +49,10 @@
 #define TEAM_HTTP_START_DELAY_MS 5000U
 #define TEAM_HTTP_RECV_TIMEOUT_MS 800U
 #define TEAM_HTTP_SEND_TIMEOUT_MS 3000U
+#define TEAM_HTTP_WIFI_SECURITY_PRIMARY WIFI_SEC_TYPE_WPA2PSK
+#define TEAM_HTTP_WIFI_PROTOCOL_PRIMARY WIFI_MODE_11B_G_N
 #define TEAM_HTTP_WIFI_SECURITY_COMPAT_MIX ((wifi_security_enum)WIFI_SEC_TYPE_WPA2_WPA_PSK_MIX)
 #define TEAM_HTTP_WIFI_PROTOCOL_COMPAT_AX WIFI_MODE_11B_G_N_AX
-#define TEAM_HTTP_WIFI_SECURITY_FALLBACK WIFI_SEC_TYPE_WPA2PSK
-#define TEAM_HTTP_WIFI_PROTOCOL_FALLBACK WIFI_MODE_11B_G_N
 
 typedef struct {
     sle_team_node_t *node;
@@ -143,6 +144,53 @@ static void team_http_format_route_label(uint8_t node_id, uint8_t role, const ui
         return;
     }
     (void)snprintf(out, out_len, "%c%02X", prefix, node_id);
+}
+
+static uint8_t team_http_online_node_count(void)
+{
+    uint8_t i;
+    uint8_t count = 0U;
+
+    if (g_team_http.node == NULL) {
+        return 0U;
+    }
+    if (g_team_http.node->cfg.role == SLE_TEAM_ROLE_LEADER || g_team_http.node->joined != 0U) {
+        count = 1U;
+    }
+    if (g_team_http.node->cfg.role != SLE_TEAM_ROLE_LEADER) {
+        return count;
+    }
+    for (i = 0U; i < SLE_TEAM_MAX_MEMBERS; i++) {
+        const sle_team_member_record_t *member = &g_team_http.node->members[i];
+        if (member->online != 0U) {
+            count++;
+        }
+    }
+    return count;
+}
+
+static uint8_t team_http_relay_node_count(void)
+{
+    uint8_t i;
+    uint8_t count = 0U;
+
+    if (g_team_http.node == NULL) {
+        return 0U;
+    }
+    if (g_team_http.node->cfg.role == SLE_TEAM_ROLE_MEMBER &&
+        (g_team_http.node->cfg.relay_enabled != 0U || g_team_http.node->cfg.relay_allowed != 0U)) {
+        return 1U;
+    }
+    if (g_team_http.node->cfg.role != SLE_TEAM_ROLE_LEADER) {
+        return 0U;
+    }
+    for (i = 0U; i < SLE_TEAM_MAX_MEMBERS; i++) {
+        const sle_team_member_record_t *member = &g_team_http.node->members[i];
+        if (member->online != 0U && member->relay_allowed != 0U) {
+            count++;
+        }
+    }
+    return count;
 }
 
 static int team_http_send_all(int fd, const char *data, size_t len)
@@ -254,6 +302,48 @@ static void team_http_send_redirect(int fd, const char *location)
 static void team_http_send_json(int fd, const char *body)
 {
     team_http_send_response(fd, "200 OK", "application/json", body != NULL ? body : "{}");
+}
+
+static int team_http_write_gps_json(char *out, size_t out_len)
+{
+    ws63_team_gps_status_t gps;
+    int len;
+
+    if (out == NULL || out_len == 0U) {
+        return SLE_TEAM_ERR_ARG;
+    }
+    ws63_team_gps_get_status(&gps);
+    len = snprintf(out, out_len,
+        "{\"enabled\":%s,\"ready\":%s,\"hasSentence\":%s,\"hasFix\":%s,\"source\":%u,"
+        "\"fixStatus\":%u,\"satCount\":%u,\"lastParseRet\":%d,"
+        "\"rxBytes\":%lu,\"rxChunks\":%lu,\"lineCount\":%lu,\"validSentences\":%lu,"
+        "\"fixSentences\":%lu,\"noFixSentences\":%lu,\"formatErrors\":%lu,"
+        "\"overflowErrors\":%lu,\"unsupportedSentences\":%lu,"
+        "\"lastRxMs\":%lu,\"lastSentenceMs\":%lu,\"lastFixMs\":%lu,"
+        "\"latitudeE6\":%ld,\"longitudeE6\":%ld,\"speedCms\":%u,\"headingDeg\":%u}",
+        gps.enabled != 0U ? "true" : "false",
+        gps.ready != 0U ? "true" : "false",
+        gps.has_sentence != 0U ? "true" : "false",
+        gps.has_fix != 0U ? "true" : "false",
+        gps.source, gps.last_fix_status, gps.last_sat_count, gps.last_parse_ret,
+        (unsigned long)gps.rx_bytes, (unsigned long)gps.rx_chunks,
+        (unsigned long)gps.line_count, (unsigned long)gps.valid_sentences,
+        (unsigned long)gps.fix_sentences, (unsigned long)gps.no_fix_sentences,
+        (unsigned long)gps.format_errors, (unsigned long)gps.overflow_errors,
+        (unsigned long)gps.unsupported_sentences, (unsigned long)gps.last_rx_ms,
+        (unsigned long)gps.last_sentence_ms, (unsigned long)gps.last_fix_ms,
+        (long)gps.latitude_e6, (long)gps.longitude_e6, gps.speed_cms, gps.heading_deg);
+    if (len < 0 || len >= (int)out_len) {
+        return SLE_TEAM_ERR_BUF;
+    }
+    return len;
+}
+
+static void team_http_send_gps_json_response(int fd)
+{
+    int ret = team_http_write_gps_json(g_team_http_json, sizeof(g_team_http_json));
+    team_http_send_response(fd, ret < 0 ? "500 Internal Server Error" : "200 OK", "application/json",
+        ret < 0 ? "{\"ok\":false,\"error\":\"gps\"}" : g_team_http_json);
 }
 
 static void team_http_send_bad_request(int fd, const char *error)
@@ -512,6 +602,14 @@ static void team_http_append_html_shell_start(char *buf, size_t buf_size, size_t
         ".ok{color:" WS63_CONSOLE_COLOR_OK "}.bad{color:" WS63_CONSOLE_COLOR_BAD "}.warn{color:"
         WS63_CONSOLE_COLOR_WARN "}.bar{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}"
         ".tag{font-size:12px;color:" WS63_CONSOLE_COLOR_MUTED ";margin-top:8px}"
+        ".stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:10px}"
+        ".stat{border:1px solid #e1e6ee;border-radius:8px;padding:8px;background:#fbfcfd}"
+        ".stat span{display:block;font-size:11px;color:" WS63_CONSOLE_COLOR_MUTED "}.stat strong{font-size:20px}"
+        ".topology{display:grid;gap:8px;margin-top:10px}.top-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}"
+        ".top-row.top-child{margin-left:18px}"
+        ".top-node{display:inline-flex;align-items:center;min-height:28px;padding:0 8px;border-radius:8px;border:1px solid #d6dde6;background:#fff;font-weight:600}"
+        ".top-node.leader{border-color:#f4b856;background:#fff5dc}.top-node.relay{border-color:#9e8bea;background:#f2eeff}"
+        ".top-node.offline{opacity:.55}.top-edge{color:" WS63_CONSOLE_COLOR_MUTED ";font-size:12px}"
         "a,button{font:inherit;border:1px solid #c9d0da;border-radius:6px;background:white;color:#182230;padding:8px 10px;text-decoration:none}"
         "input{font:inherit;border:1px solid #c9d0da;border-radius:6px;padding:8px 10px;max-width:86px}"
         "form{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}"
@@ -561,7 +659,8 @@ static void team_http_send_status_json_response(int fd)
             "\"macSuffix\":\"%04X\",\"ssid\":\"%s\",\"transport\":\"ws63-softap\","
             "\"roleRequestPending\":%s,\"roleRequestRole\":\"%s\",\"roleRequestRoleValue\":%u,\"roleRequestTeam\":%u,"
             "\"roleRequestChannel\":%u,\"roleRequestLeader\":%u,\"roleRequestLeaderSuffix\":\"%04X\","
-            "\"roleRequestLeaderTerm\":%u,\"roleRequestLastRet\":%d}",
+            "\"roleRequestLeaderTerm\":%u,\"roleRequestLastRet\":%d,"
+            "\"onlineNodeCount\":%u,\"relayNodeCount\":%u}",
             identity.self_label, identity.route_id, identity.self_mac_ready != 0U ? "true" : "false",
             identity.self_suffix, identity.softap_ssid,
             identity.role_request_pending != 0U ? "true" : "false",
@@ -572,7 +671,8 @@ static void team_http_send_status_json_response(int fd)
             identity.role_request_pending != 0U ? identity.role_request_leader : 0U,
             identity.role_request_pending != 0U ? identity.role_request_leader_suffix : 0U,
             identity.role_request_pending != 0U ? identity.role_request_leader_term : 0U,
-            identity.role_request_last_ret);
+            identity.role_request_last_ret,
+            team_http_online_node_count(), team_http_relay_node_count());
         team_http_send_response(fd, used >= sizeof(g_team_http_json) ?
             "500 Internal Server Error" : "200 OK", "application/json",
             used >= sizeof(g_team_http_json) ? "{\"ok\":false,\"error\":\"status\"}" : g_team_http_json);
@@ -605,10 +705,187 @@ static void team_http_send_location_event(int fd, uint8_t dst_id, int send_ret, 
             "{\"ok\":false,\"error\":\"location\"}" : g_team_http_json);
 }
 
+static void team_http_append_topology(char *buf, size_t buf_size, size_t *used)
+{
+    ws63_team_http_identity_t identity;
+    uint8_t i;
+    uint8_t wrote = 0U;
+    char node_label[16];
+
+    if (g_team_http.node == NULL) {
+        return;
+    }
+    team_http_get_identity(&identity);
+    team_http_append_str(buf, buf_size, used,
+        "<section class=\"card\"><h2 style=\"font-size:16px;margin:0 0 10px\">Topology</h2>"
+        "<div class=\"topology\">");
+    if (g_team_http.node->cfg.role == SLE_TEAM_ROLE_LEADER) {
+        team_http_append_fmt(buf, buf_size, used,
+            "<div class=\"top-row\"><span class=\"top-node leader\">%s</span>"
+            "<span class=\"top-edge\">online nodes=%u relays=%u</span></div>",
+            identity.self_label, team_http_online_node_count(), team_http_relay_node_count());
+        for (i = 0U; i < SLE_TEAM_MAX_MEMBERS; i++) {
+            const sle_team_member_record_t *member = &g_team_http.node->members[i];
+            if (member->online == 0U && member->policy_pending == 0U && member->position_valid == 0U) {
+                continue;
+            }
+            if (member->relay_allowed != 0U || member->parent_id != g_team_http.node->cfg.self_id) {
+                continue;
+            }
+            team_http_format_route_label(member->member_id, member->role, member->mac, member->mac_ready,
+                node_label, sizeof(node_label));
+            team_http_append_fmt(buf, buf_size, used,
+                "<div class=\"top-row\"><span class=\"top-edge\">|- direct</span>"
+                "<span class=\"top-node member%s\">%s</span>"
+                "<span class=\"top-edge\">next=%u children=%u</span></div>",
+                member->online != 0U ? "" : " offline", node_label, member->next_hop_id, member->child_count);
+            wrote = 1U;
+        }
+        for (i = 0U; i < SLE_TEAM_MAX_MEMBERS; i++) {
+            uint8_t j;
+            uint8_t child_count = 0U;
+            const sle_team_member_record_t *relay = &g_team_http.node->members[i];
+            if (relay->member_id == 0U || relay->relay_allowed == 0U ||
+                (relay->online == 0U && relay->policy_pending == 0U && relay->position_valid == 0U)) {
+                continue;
+            }
+            team_http_format_route_label(relay->member_id, relay->role, relay->mac, relay->mac_ready,
+                node_label, sizeof(node_label));
+            team_http_append_fmt(buf, buf_size, used,
+                "<div class=\"top-row\"><span class=\"top-edge\">|- relay</span>"
+                "<span class=\"top-node relay%s\">%s RELAY</span>"
+                "<span class=\"top-edge\">route=%u next=%u children=%u</span></div>",
+                relay->online != 0U ? "" : " offline", node_label, relay->member_id,
+                relay->next_hop_id, relay->child_count);
+            wrote = 1U;
+            for (j = 0U; j < SLE_TEAM_MAX_MEMBERS; j++) {
+                const sle_team_member_record_t *child = &g_team_http.node->members[j];
+                if (child->member_id == 0U || child->member_id == relay->member_id ||
+                    child->parent_id != relay->member_id ||
+                    (child->online == 0U && child->policy_pending == 0U && child->position_valid == 0U)) {
+                    continue;
+                }
+                team_http_format_route_label(child->member_id, child->role, child->mac, child->mac_ready,
+                    node_label, sizeof(node_label));
+                team_http_append_fmt(buf, buf_size, used,
+                    "<div class=\"top-row top-child\"><span class=\"top-edge\">   |-- child</span>"
+                    "<span class=\"top-node member%s\">%s</span>"
+                    "<span class=\"top-edge\">parent=%u next=%u</span></div>",
+                    child->online != 0U ? "" : " offline", node_label, child->parent_id, child->next_hop_id);
+                child_count++;
+            }
+            if (child_count == 0U) {
+                team_http_append_str(buf, buf_size, used,
+                    "<div class=\"top-row top-child\"><span class=\"top-edge\">   |-- no relay children</span></div>");
+            }
+        }
+        if (wrote == 0U) {
+            team_http_append_str(buf, buf_size, used,
+                "<div class=\"top-row\"><span class=\"top-edge\">no members online</span></div>");
+        }
+    } else {
+        team_http_append_fmt(buf, buf_size, used,
+            "<div class=\"top-row\"><span class=\"top-node leader\">%s</span>"
+            "<span class=\"top-edge\">parent</span><span class=\"top-node %s\">%s</span></div>",
+            identity.leader_label,
+            g_team_http.node->joined != 0U ? "member" : "offline",
+            identity.self_label);
+        team_http_append_fmt(buf, buf_size, used,
+            "<div class=\"top-row\"><span class=\"top-edge\">joined=%s parent=%u relay=%s</span></div>",
+            g_team_http.node->joined != 0U ? "true" : "false",
+            g_team_http.node->upstream_parent_id,
+            g_team_http.node->cfg.relay_enabled != 0U ? "enabled" :
+                (g_team_http.node->cfg.relay_allowed != 0U ? "allowed" : "off"));
+    }
+    team_http_append_str(buf, buf_size, used, "</div></section>");
+}
+
+static void team_http_append_node_rows(char *buf, size_t buf_size, size_t *used,
+    const sle_team_member_record_t *member)
+{
+    char node_label[16];
+
+    if (member == NULL) {
+        return;
+    }
+    team_http_format_route_label(member->member_id, member->role, member->mac, member->mac_ready,
+        node_label, sizeof(node_label));
+    team_http_append_fmt(buf, buf_size, used,
+        "<div class=\"row\"><span class=\"k\">" WS63_CONSOLE_NODE_NODE_LABEL
+        "</span><span class=\"v\">%s %s parent=%u next=%u children=%u</span></div>"
+        "<div class=\"row\"><span class=\"k\">" WS63_CONSOLE_NODE_BATTERY_LABEL
+        "</span><span class=\"v\">%u%%</span></div>",
+        node_label, member->online != 0U ? "online" : "offline",
+        member->parent_id, member->next_hop_id, member->child_count, member->battery_percent);
+    if (member->position_valid != 0U) {
+        team_http_append_fmt(buf, buf_size, used,
+            "<div class=\"row\"><span class=\"k\">GPS</span>"
+            "<span class=\"v\">%s fix=%u sat=%u lat=%ld lon=%ld speed=%u heading=%u</span></div>",
+            member->online != 0U ? "live" : "last", member->fix_status, member->sat_count,
+            (long)member->latitude_e6, (long)member->longitude_e6,
+            member->speed_cms, member->heading_deg);
+    } else {
+        team_http_append_fmt(buf, buf_size, used,
+            "<div class=\"row\"><span class=\"k\">GPS</span>"
+            "<span class=\"v\">no fix fix=%u sat=%u</span></div>",
+            member->fix_status, member->sat_count);
+    }
+    if (member->last_rssi_dbm == SLE_TEAM_RSSI_UNKNOWN) {
+        team_http_append_str(buf, buf_size, used,
+            "<div class=\"row\"><span class=\"k\">" WS63_CONSOLE_NODE_RSSI_LABEL
+            "</span><span class=\"v\">NA</span></div>");
+    } else {
+        team_http_append_fmt(buf, buf_size, used,
+            "<div class=\"row\"><span class=\"k\">" WS63_CONSOLE_NODE_RSSI_LABEL
+            "</span><span class=\"v\">%d dBm</span></div>", member->last_rssi_dbm);
+    }
+    team_http_append_fmt(buf, buf_size, used,
+        "<div class=\"row\"><span class=\"k\">" WS63_CONSOLE_NODE_SEQ_LABEL
+        "</span><span class=\"v\">%u seen=%lus relay=%u pending=%u</span></div>",
+        member->last_seq, (unsigned long)member->last_seen_s,
+        member->relay_allowed, member->policy_pending);
+}
+
+static void team_http_make_self_member_record(sle_team_member_record_t *self)
+{
+    const sle_team_member_record_t *record;
+
+    if (self == NULL || g_team_http.node == NULL) {
+        return;
+    }
+    record = sle_team_node_find_member(g_team_http.node, g_team_http.node->cfg.self_id);
+    if (record != NULL) {
+        *self = *record;
+    } else {
+        (void)memset_s(self, sizeof(*self), 0, sizeof(*self));
+        self->member_id = g_team_http.node->cfg.self_id;
+        self->role = (uint8_t)g_team_http.node->cfg.role;
+        self->last_rssi_dbm = SLE_TEAM_RSSI_UNKNOWN;
+    }
+    self->member_id = g_team_http.node->cfg.self_id;
+    self->role = (uint8_t)g_team_http.node->cfg.role;
+    self->online = (uint8_t)(g_team_http.node->cfg.role == SLE_TEAM_ROLE_LEADER ||
+        g_team_http.node->joined != 0U ? 1U : 0U);
+    self->relay_allowed = g_team_http.node->cfg.relay_allowed;
+    self->relay_tier = g_team_http.node->cfg.relay_tier;
+    self->max_downstream = g_team_http.node->cfg.max_downstream;
+    self->parent_id = g_team_http.node->cfg.role == SLE_TEAM_ROLE_MEMBER ?
+        g_team_http.node->upstream_parent_id : 0U;
+    self->next_hop_id = g_team_http.node->cfg.role == SLE_TEAM_ROLE_MEMBER ?
+        g_team_http.node->upstream_parent_id : 0U;
+    self->last_seq = g_team_http.node->next_seq;
+    if (g_team_http.node->cfg.self_mac_ready != 0U) {
+        (void)memcpy_s(self->mac, sizeof(self->mac), g_team_http.node->cfg.self_mac,
+            sizeof(g_team_http.node->cfg.self_mac));
+        self->mac_ready = 1U;
+    }
+}
+
 static void team_http_handle_location(int fd, const char *path)
 {
     sle_team_pos_body_t pos;
     int send_ret;
+    int local_ret;
     int32_t lat = 0;
     int32_t lon = 0;
     uint16_t speed = 0U;
@@ -618,10 +895,9 @@ static void team_http_handle_location(int fd, const char *path)
     uint8_t sat = 0U;
     uint8_t dst = SLE_TEAM_BROADCAST_ID;
 
-    if (g_team_http.node == NULL ||
-        (g_team_http.node->cfg.role == SLE_TEAM_ROLE_MEMBER && g_team_http.node->joined == 0U)) {
+    if (g_team_http.node == NULL) {
         team_http_send_response(fd, "400 Bad Request", "application/json",
-            "{\"ok\":false,\"error\":\"role_not_ready\"}");
+            "{\"ok\":false,\"error\":\"node_not_ready\"}");
         return;
     }
     if (team_http_query_i32(path, "lat", -90000000, 90000000, &lat) != 0 ||
@@ -644,11 +920,23 @@ static void team_http_handle_location(int fd, const char *path)
     pos.battery_percent = battery;
     pos.fix_status = fix;
     pos.sat_count = sat;
-    if (g_team_http.node->cfg.role == SLE_TEAM_ROLE_LEADER &&
-        (dst == SLE_TEAM_BROADCAST_ID || dst == g_team_http.node->cfg.self_id)) {
-        send_ret = sle_team_node_record_local_position(g_team_http.node, &pos);
-    } else {
+    local_ret = sle_team_node_record_local_position(g_team_http.node, &pos);
+    ws63_team_gps_set_fallback_position(&pos, (uint32_t)uapi_tcxo_get_ms());
+    if (g_team_http.node->cfg.role == SLE_TEAM_ROLE_MEMBER && g_team_http.node->joined != 0U) {
         send_ret = sle_team_node_send_position(g_team_http.node, dst, &pos);
+        if (send_ret == SLE_TEAM_OK && local_ret != SLE_TEAM_OK) {
+            send_ret = local_ret;
+        }
+    } else if (g_team_http.node->cfg.role == SLE_TEAM_ROLE_LEADER &&
+        dst != SLE_TEAM_BROADCAST_ID && dst != g_team_http.node->cfg.self_id) {
+        send_ret = sle_team_node_send_position(g_team_http.node, dst, &pos);
+        if (send_ret == SLE_TEAM_OK && local_ret != SLE_TEAM_OK) {
+            send_ret = local_ret;
+        }
+    } else if (g_team_http.node->cfg.self_id == 0U) {
+        send_ret = SLE_TEAM_OK;
+    } else {
+        send_ret = local_ret;
     }
     if (g_team_http.events != NULL) {
         sle_team_web_event_push(g_team_http.events, team_http_now_s(),
@@ -662,9 +950,11 @@ static void team_http_handle_location(int fd, const char *path)
 static void team_http_send_status_page(int fd)
 {
     ws63_team_http_identity_t identity;
+    ws63_team_gps_status_t gps;
     size_t used;
 
     team_http_get_identity(&identity);
+    ws63_team_gps_get_status(&gps);
     team_http_append_html_shell_start(g_team_http_html, sizeof(g_team_http_html), &used, "status");
     team_http_append_str(g_team_http_html, sizeof(g_team_http_html), &used, "<section class=\"card\">");
     if (g_team_http.node == NULL || identity.role_configured == 0U) {
@@ -672,10 +962,19 @@ static void team_http_send_status_page(int fd)
             "<div class=\"row\"><span class=\"k\">State</span><span class=\"v warn\">%s</span></div>"
             "<div class=\"row\"><span class=\"k\">" WS63_CONSOLE_STATUS_SELF_LABEL
             "</span><span class=\"v\">%s</span></div>"
+            "<div class=\"row\"><span class=\"k\">GPS</span>"
+            "<span class=\"v\">ready=%u rx=%lu valid=%lu fix=%u sat=%u</span></div>"
+            "<div class=\"row\"><span class=\"k\">GPS Detail</span>"
+            "<span class=\"v\">fixSent=%lu noFix=%lu fmt=%lu unsup=%lu source=%u</span></div>"
             "<div class=\"row\"><span class=\"k\">SSID</span><span class=\"v\">%s</span></div>"
-            "<div class=\"bar\"><a href=\"/pairing\">configure</a></div></section>",
+            "<div class=\"bar\"><a href=\"/pairing\">configure</a><a href=\"/api/gps\">gps json</a></div></section>",
             identity.role_request_pending != 0U ? "starting" : "unconfigured",
-            identity.self_label, identity.softap_ssid);
+            identity.self_label,
+            gps.ready, (unsigned long)gps.rx_bytes, (unsigned long)gps.valid_sentences,
+            gps.last_fix_status, gps.last_sat_count,
+            (unsigned long)gps.fix_sentences, (unsigned long)gps.no_fix_sentences,
+            (unsigned long)gps.format_errors, (unsigned long)gps.unsupported_sentences, gps.source,
+            identity.softap_ssid);
         team_http_append_html_end(g_team_http_html, sizeof(g_team_http_html), &used);
         team_http_send_response(fd, "200 OK", "text/html; charset=utf-8", g_team_http_html);
         return;
@@ -702,6 +1001,10 @@ static void team_http_send_status_page(int fd)
         "<div class=\"row\"><span class=\"k\">" WS63_CONSOLE_STATUS_TRANSPORT_LABEL
         "</span><span class=\"v\">ws63-softap</span></div>"
         "<div class=\"row\"><span class=\"k\">SSID</span><span class=\"v\">%s</span></div>"
+        "<div class=\"row\"><span class=\"k\">GPS</span>"
+        "<span class=\"v\">ready=%u rx=%lu valid=%lu fix=%u sat=%u</span></div>"
+        "<div class=\"row\"><span class=\"k\">GPS Detail</span>"
+        "<span class=\"v\">fixSent=%lu noFix=%lu fmt=%lu unsup=%lu source=%u</span></div>"
         "<div class=\"row\"><span class=\"k\">" WS63_CONSOLE_STATUS_LINK_LABEL
         "</span><span class=\"v ok\">ok</span></div>",
         sle_team_web_state_name((uint8_t)g_team_http.node->state),
@@ -711,16 +1014,26 @@ static void team_http_send_status_page(int fd)
         g_team_http.node->cfg.relay_enabled != 0U ? "true" : "false",
         g_team_http.node->upstream_parent_id,
         sle_team_web_parent_state_name((uint8_t)g_team_http.node->upstream_parent_state),
-        g_team_http.node->next_seq, (unsigned long)team_http_now_s(), identity.softap_ssid);
+        g_team_http.node->next_seq, (unsigned long)team_http_now_s(), identity.softap_ssid,
+        gps.ready, (unsigned long)gps.rx_bytes, (unsigned long)gps.valid_sentences,
+        gps.last_fix_status, gps.last_sat_count,
+        (unsigned long)gps.fix_sentences, (unsigned long)gps.no_fix_sentences,
+        (unsigned long)gps.format_errors, (unsigned long)gps.unsupported_sentences, gps.source);
     if (g_team_http.node->cfg.role == SLE_TEAM_ROLE_LEADER) {
         team_http_append_fmt(g_team_http_html, sizeof(g_team_http_html), &used,
             "<div class=\"row\"><span class=\"k\">Direct Cap</span><span class=\"v\">%u</span></div>"
-            "<div class=\"row\"><span class=\"k\">Pairing</span><span class=\"v %s\">%s</span></div>",
+            "<div class=\"row\"><span class=\"k\">Pairing</span><span class=\"v %s\">%s</span></div>"
+            "<div class=\"stats\"><div class=\"stat\"><span>Online Nodes</span><strong>%u</strong></div>"
+            "<div class=\"stat\"><span>Relay Nodes</span><strong>%u</strong></div>"
+            "<div class=\"stat\"><span>Events</span><strong>%u</strong></div></div>",
             g_team_http.node->cfg.max_downstream,
             g_team_http.node->cfg.pairing_enabled != 0U ? "ok" : "warn",
-            g_team_http.node->cfg.pairing_enabled != 0U ? "open" : "closed");
+            g_team_http.node->cfg.pairing_enabled != 0U ? "open" : "closed",
+            team_http_online_node_count(), team_http_relay_node_count(),
+            g_team_http.events != NULL ? g_team_http.events->count : 0U);
     }
     team_http_append_str(g_team_http_html, sizeof(g_team_http_html), &used, "</section>");
+    team_http_append_topology(g_team_http_html, sizeof(g_team_http_html), &used);
     team_http_append_html_end(g_team_http_html, sizeof(g_team_http_html), &used);
     team_http_send_response(fd, "200 OK", "text/html; charset=utf-8", g_team_http_html);
 }
@@ -730,54 +1043,28 @@ static void team_http_send_nodes_page(int fd)
     uint8_t i;
     uint8_t wrote = 0U;
     size_t used;
-    char node_label[16];
 
     team_http_append_html_shell_start(g_team_http_html, sizeof(g_team_http_html), &used, "nodes");
     team_http_append_str(g_team_http_html, sizeof(g_team_http_html), &used,
         "<section class=\"card\"><h2 style=\"font-size:16px;margin:0 0 10px\">Nodes</h2>");
     if (g_team_http.node != NULL) {
+        if (g_team_http.node->cfg.role == SLE_TEAM_ROLE_MEMBER) {
+            sle_team_member_record_t self;
+            team_http_make_self_member_record(&self);
+            team_http_append_node_rows(g_team_http_html, sizeof(g_team_http_html), &used, &self);
+            wrote = 1U;
+        }
         for (i = 0U; i < SLE_TEAM_MAX_MEMBERS; i++) {
             const sle_team_member_record_t *member = &g_team_http.node->members[i];
             if (member->online == 0U && member->policy_pending == 0U && member->position_valid == 0U) {
                 continue;
             }
+            if (g_team_http.node->cfg.role == SLE_TEAM_ROLE_MEMBER &&
+                member->member_id == g_team_http.node->cfg.self_id) {
+                continue;
+            }
             wrote = 1U;
-            team_http_format_route_label(member->member_id, member->role, member->mac, member->mac_ready,
-                node_label, sizeof(node_label));
-            team_http_append_fmt(g_team_http_html, sizeof(g_team_http_html), &used,
-                "<div class=\"row\"><span class=\"k\">" WS63_CONSOLE_NODE_NODE_LABEL
-                "</span><span class=\"v\">%s %s parent=%u next=%u children=%u</span></div>"
-                "<div class=\"row\"><span class=\"k\">" WS63_CONSOLE_NODE_BATTERY_LABEL
-                "</span><span class=\"v\">%u%%</span></div>",
-                node_label, member->online != 0U ? "online" : "offline",
-                member->parent_id, member->next_hop_id, member->child_count, member->battery_percent);
-            if (member->position_valid != 0U) {
-                team_http_append_fmt(g_team_http_html, sizeof(g_team_http_html), &used,
-                    "<div class=\"row\"><span class=\"k\">GPS</span>"
-                    "<span class=\"v\">%s fix=%u sat=%u lat=%ld lon=%ld speed=%u heading=%u</span></div>",
-                    member->online != 0U ? "live" : "last", member->fix_status, member->sat_count,
-                    (long)member->latitude_e6, (long)member->longitude_e6,
-                    member->speed_cms, member->heading_deg);
-            } else {
-                team_http_append_fmt(g_team_http_html, sizeof(g_team_http_html), &used,
-                    "<div class=\"row\"><span class=\"k\">GPS</span>"
-                    "<span class=\"v\">no fix fix=%u sat=%u</span></div>",
-                    member->fix_status, member->sat_count);
-            }
-            if (member->last_rssi_dbm == SLE_TEAM_RSSI_UNKNOWN) {
-                team_http_append_str(g_team_http_html, sizeof(g_team_http_html), &used,
-                    "<div class=\"row\"><span class=\"k\">" WS63_CONSOLE_NODE_RSSI_LABEL
-                    "</span><span class=\"v\">NA</span></div>");
-            } else {
-                team_http_append_fmt(g_team_http_html, sizeof(g_team_http_html), &used,
-                    "<div class=\"row\"><span class=\"k\">" WS63_CONSOLE_NODE_RSSI_LABEL
-                    "</span><span class=\"v\">%d dBm</span></div>", member->last_rssi_dbm);
-            }
-            team_http_append_fmt(g_team_http_html, sizeof(g_team_http_html), &used,
-                "<div class=\"row\"><span class=\"k\">" WS63_CONSOLE_NODE_SEQ_LABEL
-                "</span><span class=\"v\">%u seen=%lus relay=%u pending=%u</span></div>",
-                member->last_seq, (unsigned long)member->last_seen_s,
-                member->relay_allowed, member->policy_pending);
+            team_http_append_node_rows(g_team_http_html, sizeof(g_team_http_html), &used, member);
         }
     }
     if (wrote == 0U) {
@@ -1012,6 +1299,8 @@ static void team_http_handle_client(int fd)
 
     if (strncmp(g_team_http_req, "GET /api/status", 15) == 0) {
         team_http_send_status_json_response(fd);
+    } else if (strncmp(g_team_http_req, "GET /api/gps", 12) == 0) {
+        team_http_send_gps_json_response(fd);
     } else if (strncmp(g_team_http_req, "GET /api/nodes", 14) == 0) {
         ret = g_team_http.node != NULL ?
             sle_team_web_write_nodes_json(g_team_http.node, g_team_http_json, sizeof(g_team_http_json)) :
@@ -1188,15 +1477,16 @@ static int team_http_start_softap(void)
     (void)memset_s(&adv, sizeof(adv), 0, sizeof(adv));
     (void)snprintf((char *)conf.ssid, sizeof(conf.ssid), "%s", g_team_http.ssid);
     (void)snprintf((char *)conf.pre_shared_key, sizeof(conf.pre_shared_key), "%s", CONFIG_SLE_TEAM_WIFI_AP_PSK);
-    conf.security_type = TEAM_HTTP_WIFI_SECURITY_COMPAT_MIX;
+    conf.security_type = TEAM_HTTP_WIFI_SECURITY_PRIMARY;
     conf.channel_num = CONFIG_SLE_TEAM_WIFI_AP_CHANNEL;
     conf.wifi_psk_type = WIFI_WPA_PSK_NOT_USE;
     adv.beacon_interval = 100U;
     adv.dtim_period = 2U;
     adv.group_rekey = 86400U;
-    adv.protocol_mode = TEAM_HTTP_WIFI_PROTOCOL_COMPAT_AX;
-    /* Match the field-proven v4.4 SoftAP startup path first: mix/AX is the
-     * compatibility path that was visible on the local v4.4 reference. */
+    adv.protocol_mode = TEAM_HTTP_WIFI_PROTOCOL_PRIMARY;
+    /* iOS discovery is more reliable with a plain WPA2 + 11b/g/n SoftAP. Keep
+     * the broader mix/AX mode as a fallback for SDK/board combinations that
+     * reject the conservative primary config. */
     adv.hidden_ssid_flag = 1U;
     ret = wifi_set_softap_config_advance(&adv);
     if (ret != ERRCODE_SUCC) {
@@ -1205,10 +1495,10 @@ static int team_http_start_softap(void)
     }
     ret = wifi_softap_enable(&conf);
     if (ret != ERRCODE_SUCC) {
-        osal_printk("[team-wifi] softap enable failed ret=0x%x with mix/ax, fallback to wpa2+11bgn\r\n", ret);
-        conf.security_type = TEAM_HTTP_WIFI_SECURITY_FALLBACK;
+        osal_printk("[team-wifi] softap enable failed ret=0x%x with wpa2+11bgn, fallback to mix/ax\r\n", ret);
+        conf.security_type = TEAM_HTTP_WIFI_SECURITY_COMPAT_MIX;
         fallback = adv;
-        fallback.protocol_mode = TEAM_HTTP_WIFI_PROTOCOL_FALLBACK;
+        fallback.protocol_mode = TEAM_HTTP_WIFI_PROTOCOL_COMPAT_AX;
         ret = wifi_set_softap_config_advance(&fallback);
         if (ret != ERRCODE_SUCC) {
             osal_printk("[team-wifi] softap fallback advance config failed ret=0x%x\r\n", ret);

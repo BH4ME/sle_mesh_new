@@ -33,6 +33,7 @@
 #include "ws63_team_power.h"
 #include "ws63_st7789_display.h"
 #include "ws63_team_status_led.h"
+#include "ws63_ws2812.h"
 #ifndef CONFIG_SLE_TEAM_SELF_ID
 #define CONFIG_SLE_TEAM_SELF_ID 1
 #endif
@@ -85,10 +86,10 @@
 #define CONFIG_SLE_TEAM_ST7789_CS_PIN 8
 #endif
 #ifndef CONFIG_SLE_TEAM_ST7789_DC_PIN
-#define CONFIG_SLE_TEAM_ST7789_DC_PIN 13
+#define CONFIG_SLE_TEAM_ST7789_DC_PIN 10
 #endif
 #ifndef CONFIG_SLE_TEAM_ST7789_RESET_PIN
-#define CONFIG_SLE_TEAM_ST7789_RESET_PIN 10
+#define CONFIG_SLE_TEAM_ST7789_RESET_PIN 13
 #endif
 #ifndef CONFIG_SLE_TEAM_ST7789_X_OFFSET
 #define CONFIG_SLE_TEAM_ST7789_X_OFFSET 40
@@ -102,8 +103,8 @@
 #ifndef CONFIG_SLE_TEAM_ST7789_HEIGHT
 #define CONFIG_SLE_TEAM_ST7789_HEIGHT 135
 #endif
-#define SLE_TEAM_FW_VERSION "v4.5.56-minimal"
-#define SLE_TEAM_FW_COMPAT 0x0556U
+#define SLE_TEAM_FW_VERSION "v4.5.64-minimal"
+#define SLE_TEAM_FW_COMPAT 0x0564U
 #define SLE_TEAM_HW_CONSTRAINTS "minimal leader/member/relay rewrite"
 #define SLE_TEAM_APP_TASK_STACK_SIZE 0x1800
 #define SLE_TEAM_APP_TASK_PRIO 28
@@ -268,6 +269,22 @@ static void team_print(const char *text)
     if (text != NULL) {
         osal_printk("[team] %s\r\n", text);
     }
+}
+static void team_web_event(sle_team_web_event_direction_t direction, uint8_t msg_type,
+    uint8_t src_id, uint8_t dst_id, const char *summary)
+{
+    uint16_t seq = 0U;
+
+    if (g_team_rt.role_configured != 0U) {
+        src_id = src_id != 0U ? src_id : g_team_node.cfg.self_id;
+        if (g_team_node.next_seq != 0U) {
+            seq = (uint16_t)(g_team_node.next_seq - 1U);
+        }
+    } else {
+        src_id = src_id != 0U ? src_id : g_team_rt.route_id;
+    }
+    sle_team_web_event_push(&g_team_events, team_now_s(NULL), direction, msg_type,
+        src_id, dst_id, seq, summary);
 }
 static void team_cli_print(void *user_ctx, const char *text)
 {
@@ -869,9 +886,14 @@ static void team_leader_update_scan_policy(void)
     if (g_team_rt.leader_scan_paused != 0U) {
         sle_uart_client_resume_scan("leader-needs-candidate");
         g_team_rt.leader_scan_paused = 0U;
+        g_team_rt.last_leader_rescan_ms = 0U;
+    }
+    if (sle_uart_client_scan_busy() != 0U) {
+        return;
     }
     now_ms = (uint32_t)uapi_tcxo_get_ms();
-    if ((uint32_t)(now_ms - g_team_rt.last_leader_rescan_ms) < SLE_TEAM_LEADER_RESCAN_INTERVAL_MS) {
+    if (g_team_rt.last_leader_rescan_ms != 0U &&
+        (uint32_t)(now_ms - g_team_rt.last_leader_rescan_ms) < SLE_TEAM_LEADER_RESCAN_INTERVAL_MS) {
         return;
     }
     g_team_rt.last_leader_rescan_ms = now_ms;
@@ -1069,21 +1091,66 @@ static void team_http_get_identity_cb(ws63_team_http_identity_t *identity)
     identity->role_request_last_ret = g_team_rt.role_request_last_ret;
     identity->fw_version = SLE_TEAM_FW_VERSION;
 }
+
+static void team_gps_status_json(void)
+{
+    ws63_team_gps_status_t gps;
+    char json[768];
+
+    ws63_team_gps_get_status(&gps);
+    (void)snprintf(json, sizeof(json),
+        "{\"enabled\":%s,\"ready\":%s,\"hasSentence\":%s,\"hasFix\":%s,\"source\":%u,"
+        "\"fixStatus\":%u,\"satCount\":%u,\"lastParseRet\":%d,\"rxBytes\":%lu,"
+        "\"rxChunks\":%lu,\"lineCount\":%lu,\"validSentences\":%lu,\"fixSentences\":%lu,"
+        "\"noFixSentences\":%lu,\"formatErrors\":%lu,\"overflowErrors\":%lu,"
+        "\"unsupportedSentences\":%lu,\"lastRxMs\":%lu,\"lastSentenceMs\":%lu,"
+        "\"lastFixMs\":%lu,\"latitudeE6\":%ld,\"longitudeE6\":%ld,\"speedCms\":%u,"
+        "\"headingDeg\":%u}",
+        gps.enabled != 0U ? "true" : "false",
+        gps.ready != 0U ? "true" : "false",
+        gps.has_sentence != 0U ? "true" : "false",
+        gps.has_fix != 0U ? "true" : "false",
+        gps.source, gps.last_fix_status, gps.last_sat_count, gps.last_parse_ret, (unsigned long)gps.rx_bytes,
+        (unsigned long)gps.rx_chunks, (unsigned long)gps.line_count, (unsigned long)gps.valid_sentences,
+        (unsigned long)gps.fix_sentences, (unsigned long)gps.no_fix_sentences,
+        (unsigned long)gps.format_errors, (unsigned long)gps.overflow_errors,
+        (unsigned long)gps.unsupported_sentences, (unsigned long)gps.last_rx_ms,
+        (unsigned long)gps.last_sentence_ms, (unsigned long)gps.last_fix_ms,
+        (long)gps.latitude_e6, (long)gps.longitude_e6, gps.speed_cms, gps.heading_deg);
+    osal_printk("[gps] %s\r\n", json);
+}
 static int team_http_pairing_start_cb(void)
 {
-    return sle_team_node_pairing_start(&g_team_node);
+    int ret = sle_team_node_pairing_start(&g_team_node);
+    team_web_event(SLE_TEAM_WEB_EVENT_SYSTEM, SLE_TEAM_APP_CONFIG,
+        g_team_node.cfg.self_id, SLE_TEAM_BROADCAST_ID,
+        ret == SLE_TEAM_OK ? "pairing start" : "pairing start failed");
+    return ret;
 }
 static int team_http_pairing_stop_cb(void)
 {
-    return sle_team_node_pairing_stop(&g_team_node);
+    int ret = sle_team_node_pairing_stop(&g_team_node);
+    team_web_event(SLE_TEAM_WEB_EVENT_SYSTEM, SLE_TEAM_APP_CONFIG,
+        g_team_node.cfg.self_id, SLE_TEAM_BROADCAST_ID,
+        ret == SLE_TEAM_OK ? "pairing stop" : "pairing stop failed");
+    return ret;
 }
 static int team_http_pairing_approve_cb(uint8_t member_id, uint8_t relay_allowed)
 {
-    return sle_team_node_pairing_approve_with_relay(&g_team_node, member_id, relay_allowed);
+    int ret = sle_team_node_pairing_approve_with_relay(&g_team_node, member_id, relay_allowed);
+    team_web_event(SLE_TEAM_WEB_EVENT_SYSTEM, SLE_TEAM_APP_CONFIG,
+        g_team_node.cfg.self_id, member_id,
+        ret == SLE_TEAM_OK ? (relay_allowed != 0U ? "pairing approve relay" : "pairing approve") :
+            "pairing approve failed");
+    return ret;
 }
 static int team_http_member_select_cb(uint16_t leader_suffix, uint8_t team_id, uint8_t channel_hash)
 {
-    return team_cfg_save_member(leader_suffix, team_id, channel_hash, SLE_TEAM_LEADER_TERM_DEFAULT, 1U);
+    int ret = team_cfg_save_member(leader_suffix, team_id, channel_hash, SLE_TEAM_LEADER_TERM_DEFAULT, 1U);
+    team_web_event(SLE_TEAM_WEB_EVENT_SYSTEM, SLE_TEAM_APP_CONFIG,
+        g_team_rt.route_id, team_route_id_from_suffix(leader_suffix),
+        ret == SLE_TEAM_OK ? "member select leader" : "member select failed");
+    return ret;
 }
 static int team_http_member_leave_cb(void)
 {
@@ -1094,8 +1161,13 @@ static int team_http_member_leave_cb(void)
     }
     ret = sle_team_node_member_leave(&g_team_node);
     if (ret == SLE_TEAM_OK) {
+        team_web_event(SLE_TEAM_WEB_EVENT_SYSTEM, SLE_TEAM_APP_ALERT,
+            g_team_node.cfg.self_id, g_team_node.cfg.leader_id, "member leave");
         (void)team_nv_config_clear();
         team_member_reset_after_leave();
+    } else {
+        team_web_event(SLE_TEAM_WEB_EVENT_SYSTEM, SLE_TEAM_APP_ALERT,
+            g_team_node.cfg.self_id, g_team_node.cfg.leader_id, "member leave failed");
     }
     return ret;
 }
@@ -1161,9 +1233,14 @@ static void team_on_joined(void *user_ctx, uint8_t member_id)
         ret = sle_team_node_grant_relay(&g_team_node, member_id);
         osal_printk("[team] relay grant member=%u target=%u relays=%u ret=%d\r\n",
             member_id, g_team_rt.relay_target, team_relay_count(), ret);
+        team_web_event(SLE_TEAM_WEB_EVENT_SYSTEM, SLE_TEAM_APP_CONFIG,
+            g_team_node.cfg.self_id, member_id,
+            ret == SLE_TEAM_OK ? "relay grant" : "relay grant failed");
     }
     osal_printk("[team] joined member=%u online=%u relays=%u\r\n",
         member_id, team_online_count(), team_relay_count());
+    team_web_event(SLE_TEAM_WEB_EVENT_RX, SLE_TEAM_APP_HELLO,
+        member_id, g_team_node.cfg.self_id, "member joined");
     team_display_publish_event(WS63_ST7789_EVENT_JOIN, member_id, NULL);
     team_status_led_update();
 }
@@ -1202,11 +1279,15 @@ static void team_on_position(void *user_ctx, uint8_t member_id, const sle_team_p
 static void team_on_alert(void *user_ctx, uint8_t member_id, uint8_t reason)
 {
     unused(user_ctx);
-    osal_printk("[team] alert member=%u reason=%u\r\n", member_id, reason);
+        osal_printk("[team] alert member=%u reason=%u\r\n", member_id, reason);
     if (reason == (uint8_t)SLE_TEAM_ALERT_LEAVE) {
         osal_printk("[team] member offline id=%u reason=leave\r\n", member_id);
+        team_web_event(SLE_TEAM_WEB_EVENT_RX, SLE_TEAM_APP_ALERT,
+            member_id, g_team_node.cfg.self_id, "member leave alert");
         team_display_publish_event(WS63_ST7789_EVENT_LEFT, member_id, NULL);
     } else {
+        team_web_event(SLE_TEAM_WEB_EVENT_RX, SLE_TEAM_APP_ALERT,
+            member_id, g_team_node.cfg.self_id, "member alert/lost");
         team_display_publish_event(WS63_ST7789_EVENT_LOST, member_id, NULL);
     }
 }
@@ -1214,6 +1295,8 @@ static void team_on_relay_offline(void *user_ctx, uint8_t member_id)
 {
     unused(user_ctx);
     osal_printk("[team] relay offline member=%u\r\n", member_id);
+    team_web_event(SLE_TEAM_WEB_EVENT_SYSTEM, SLE_TEAM_APP_ALERT,
+        g_team_node.cfg.self_id, member_id, "relay offline");
     team_display_publish_event(WS63_ST7789_EVENT_LOST, member_id, NULL);
     ws63_team_status_led_lost();
     /* Relay loss is handled by the portable core, but the radio scanner lives
@@ -1734,6 +1817,8 @@ static void team_connection_state_changed_cbk(uint16_t conn_id, const sle_addr_t
                 if (team_leader_known_relay_child(disconnected_member_id) == 0U) {
                     osal_printk("[team] disconnect resolved conn=%u member=%u\r\n", conn_id, disconnected_member_id);
                     (void)sle_team_node_member_offline(&g_team_node, disconnected_member_id);
+                    team_web_event(SLE_TEAM_WEB_EVENT_SYSTEM, SLE_TEAM_APP_ALERT,
+                        g_team_node.cfg.self_id, disconnected_member_id, "member disconnected");
                 } else {
                     osal_printk("[team] disconnect keep relay child conn=%u member=%u\r\n",
                         conn_id, disconnected_member_id);
@@ -1773,6 +1858,8 @@ static void team_connection_state_changed_cbk(uint16_t conn_id, const sle_addr_t
         }
         ws63_team_status_led_lost();
         team_display_publish_event(WS63_ST7789_EVENT_LOST, g_team_node.upstream_parent_id, NULL);
+        team_web_event(SLE_TEAM_WEB_EVENT_SYSTEM, SLE_TEAM_APP_ALERT,
+            g_team_node.cfg.self_id, g_team_node.upstream_parent_id, "upstream lost");
         (void)sle_team_node_member_link_lost(&g_team_node);
         team_member_drop_downstream_children("upstream-lost");
         if (g_team_rt.relay_client_started != 0U) {
@@ -1896,10 +1983,16 @@ static int team_configure_role(sle_team_node_role_t role, uint8_t team_id, uint8
         SLE_TEAM_FW_VERSION, role == SLE_TEAM_ROLE_LEADER ? "leader" : "member",
         g_team_node.cfg.self_id, g_team_node.cfg.leader_id, g_team_node.cfg.team_id,
         g_team_node.cfg.channel_hash, team_direct_cap(), g_team_node.cfg.leader_term, g_team_rt.self_label);
+    team_web_event(SLE_TEAM_WEB_EVENT_SYSTEM, SLE_TEAM_APP_CONFIG,
+        g_team_node.cfg.self_id, g_team_node.cfg.leader_id,
+        role == SLE_TEAM_ROLE_LEADER ? "leader configured" : "member configured");
     if (role == SLE_TEAM_ROLE_MEMBER) {
         ret = sle_team_node_member_select_leader_term(&g_team_node, team_id, leader_id,
             channel_hash, g_team_node.cfg.leader_term);
         osal_printk("[team] member hello ret=%d\r\n", ret);
+        team_web_event(ret == SLE_TEAM_OK ? SLE_TEAM_WEB_EVENT_TX : SLE_TEAM_WEB_EVENT_SYSTEM,
+            SLE_TEAM_APP_HELLO, g_team_node.cfg.self_id, leader_id,
+            ret == SLE_TEAM_OK ? "member hello" : "member hello failed");
     }
     team_status_led_update();
     team_display_publish_status();
@@ -1933,6 +2026,8 @@ static void team_relay_client_start_if_ready(void)
     g_team_rt.relay_scan_paused_for_upstream_loss = 0U;
     g_team_node.cfg.relay_enabled = 1U;
     team_print("relay child client started");
+    team_web_event(SLE_TEAM_WEB_EVENT_SYSTEM, SLE_TEAM_APP_CONFIG,
+        g_team_node.cfg.self_id, SLE_TEAM_BROADCAST_ID, "relay child client started");
     team_status_led_update();
     team_display_publish_status();
 }
@@ -2080,6 +2175,9 @@ static int team_request_role_config(sle_team_node_role_t role, uint8_t team_id, 
     osal_printk("[team] role request queued role=%u leader=%u team=%u channel=%u suffix=%04X term=%u direct_cap=%u save_nv=%u\r\n",
         (uint8_t)role, leader_id, team_id, channel_hash, leader_suffix, g_team_rt.role_request_leader_term,
         direct_cap, save_nv);
+    team_web_event(SLE_TEAM_WEB_EVENT_SYSTEM, SLE_TEAM_APP_CONFIG,
+        g_team_rt.route_id, leader_id,
+        role == SLE_TEAM_ROLE_LEADER ? "leader role queued" : "member role queued");
     return SLE_TEAM_OK;
 }
 static void team_handle_role_request_once(void)
@@ -2124,6 +2222,8 @@ static void team_handle_role_request_once(void)
     }
     osal_printk("[team] role request done role=%u leader=%u team=%u channel=%u suffix=%04X term=%u ret=%d\r\n",
         (uint8_t)role, leader_id, team_id, channel_hash, leader_suffix, leader_term, ret);
+    team_web_event(SLE_TEAM_WEB_EVENT_SYSTEM, SLE_TEAM_APP_CONFIG,
+        g_team_rt.route_id, leader_id, ret == SLE_TEAM_OK ? "role request done" : "role request failed");
 }
 static void *team_reboot_task(const char *arg)
 {
@@ -2269,6 +2369,50 @@ static int team_cfg_cli_handle(const char *line)
     }
     return 0;
 }
+static int team_led_cli_handle(const char *line)
+{
+    if (line == NULL || strncmp(line, "led", 3) != 0) {
+        return 0;
+    }
+    if (strcmp(line, "led off") == 0 || strcmp(line, "led hold-low") == 0) {
+        ws63_team_status_led_hold_low(1U);
+        osal_printk("[led] hold_low=1 ret=0 pin=%u\r\n", ws63_ws2812_pin());
+        return 1;
+    }
+    if (strcmp(line, "led on") == 0) {
+        ws63_team_status_led_hold_low(0U);
+        team_status_led_update();
+        osal_printk("[led] hold_low=0 ret=0 pin=%u\r\n", ws63_ws2812_pin());
+        return 1;
+    }
+    if (strcmp(line, "led status") == 0) {
+        osal_printk("[led] hold_low=%u ready=%u pin=%u\r\n",
+            ws63_team_status_led_hold_low_active(), ws63_ws2812_is_ready(), ws63_ws2812_pin());
+        return 1;
+    }
+    if (strcmp(line, "led help") == 0) {
+        osal_printk("[led] cmds: status | off | hold-low | on\r\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int team_gps_cli_handle(const char *line)
+{
+    if (line == NULL || strncmp(line, "gps", 3) != 0) {
+        return 0;
+    }
+    if (strcmp(line, "gps") == 0 || strcmp(line, "gps status") == 0) {
+        team_gps_status_json();
+        return 1;
+    }
+    if (strcmp(line, "gps help") == 0) {
+        osal_printk("[gps] cmds: status\r\n");
+        return 1;
+    }
+    return 0;
+}
+
 static void team_uart_pins_init(void)
 {
     (void)uapi_pin_set_mode(CONFIG_SLE_TEAM_UART_TXD_PIN, PIN_MODE_1);
@@ -2372,6 +2516,12 @@ static void team_handle_cli_queue_once(void)
     if (ws63_team_power_cli_handle(msg.line) != 0) {
         return;
     }
+    if (team_gps_cli_handle(msg.line) != 0) {
+        return;
+    }
+    if (team_led_cli_handle(msg.line) != 0) {
+        return;
+    }
     if (team_cfg_cli_handle(msg.line) != 0) {
         return;
     }
@@ -2453,6 +2603,8 @@ static void *team_network_task(const char *arg)
         team_handle_role_request_once();
         if (g_team_rt.role_configured != 0U) {
             team_network_tick_role_configured();
+        } else {
+            ws63_team_gps_tick(&g_team_node, (uint32_t)uapi_tcxo_get_ms(), team_battery_percent(NULL));
         }
         osal_msleep(SLE_TEAM_MAIN_LOOP_SLEEP_MS);
     }

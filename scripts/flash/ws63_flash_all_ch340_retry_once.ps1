@@ -2,7 +2,7 @@ param(
     [string[]]$Ports = @(),
     [string]$Firmware = "",
     [string]$Python = "",
-    [string]$ExpectedVersion = "v4.5.49-minimal",
+    [string]$ExpectedVersion = "v4.5.64-minimal",
     [string]$LogRoot = "",
     [int]$Baudrate = 115200,
     [double]$WaitTimeout = 15.0,

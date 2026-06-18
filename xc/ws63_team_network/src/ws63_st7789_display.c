@@ -39,7 +39,7 @@
 #endif
 
 #ifndef CONFIG_SLE_TEAM_ST7789_CS_ALWAYS_LOW
-#define CONFIG_SLE_TEAM_ST7789_CS_ALWAYS_LOW 1
+#define CONFIG_SLE_TEAM_ST7789_CS_ALWAYS_LOW 0
 #endif
 
 #if CONFIG_SLE_TEAM_DISPLAY_USE_LVGL
@@ -71,10 +71,8 @@
 #define ST7789_SPI_FREQ_MHZ 8
 #define ST7789_SPI_WAIT_CYCLES 0x10
 #define ST7789_SPI_TIMEOUT 0xFFFFFFFFU
-#define ST7789_SOFT_SPI_ENABLE 1
-#define ST7789_SOFT_SPI_MODE3 0
-#define ST7789_SOFT_SPI_DELAY_CYCLES 12U
-#define ST7789_CS_LOW_SETTLE_MS 5U
+#define ST7789_SOFT_SPI_ENABLE 0
+#define ST7789_CS_IDLE_SETTLE_MS 2U
 #define ST7789_FULL_INIT_SEQ_ENABLE 1
 #define ST7789_MADCTL_DEFAULT 0x60U
 #define ST7789_COLOR_BLACK 0x0000U
@@ -343,7 +341,7 @@ static const uint8_t g_st7789_font6x8[][6] = {
 static void st7789_cs(uint8_t selected)
 {
 #if CONFIG_SLE_TEAM_ST7789_CS_ALWAYS_LOW
-    /* The current FPC wiring is validated with CS held low after boot. */
+    /* Compatibility escape hatch only; normal current hardware releases CS. */
     (void)selected;
     (void)uapi_gpio_set_val(g_st7789_cfg.cs_pin, GPIO_LEVEL_LOW);
 #else
@@ -356,95 +354,20 @@ static void st7789_dc(uint8_t data)
     (void)uapi_gpio_set_val(g_st7789_cfg.dc_pin, data != 0U ? GPIO_LEVEL_HIGH : GPIO_LEVEL_LOW);
 }
 
-#if ST7789_SOFT_SPI_ENABLE
-/*
- * The validated v4.5 display path bit-bangs SPI over GPIO. That avoids SDK SPI
- * mode/pinmux surprises while keeping the display task independent of network
- * timing. The hardware-SPI path below is left available for future boards.
- */
-static void st7789_sclk(uint8_t high)
-{
-    (void)uapi_gpio_set_val(g_st7789_cfg.sclk_pin, high != 0U ? GPIO_LEVEL_HIGH : GPIO_LEVEL_LOW);
-}
-
-static void st7789_mosi(uint8_t high)
-{
-    (void)uapi_gpio_set_val(g_st7789_cfg.mosi_pin, high != 0U ? GPIO_LEVEL_HIGH : GPIO_LEVEL_LOW);
-}
-
-static void st7789_spi_idle_level(void)
-{
-#if ST7789_SOFT_SPI_MODE3
-    st7789_sclk(1U);
-#else
-    st7789_sclk(0U);
-#endif
-}
-
-static void st7789_soft_spi_delay(void)
-{
-    volatile uint32_t n;
-
-    for (n = 0U; n < ST7789_SOFT_SPI_DELAY_CYCLES; n++) {
-    }
-}
-
-static void st7789_soft_spi_write_u8(uint8_t byte)
-{
-    uint8_t bit;
-
-    for (bit = 0U; bit < 8U; bit++) {
-#if ST7789_SOFT_SPI_MODE3
-        st7789_sclk(0U);
-        st7789_soft_spi_delay();
-        st7789_mosi((byte & 0x80U) != 0U ? 1U : 0U);
-        st7789_soft_spi_delay();
-        st7789_sclk(1U);
-        st7789_soft_spi_delay();
-#else
-        st7789_sclk(0U);
-        st7789_soft_spi_delay();
-        st7789_mosi((byte & 0x80U) != 0U ? 1U : 0U);
-        st7789_soft_spi_delay();
-        st7789_sclk(1U);
-        st7789_soft_spi_delay();
-        st7789_sclk(0U);
-        st7789_soft_spi_delay();
-#endif
-        byte <<= 1U;
-    }
-}
-#endif
-
 static int st7789_write(const uint8_t *buf, uint32_t len)
 {
-#if ST7789_SOFT_SPI_ENABLE
-    uint32_t i;
-#else
     spi_xfer_data_t data = {0};
     errcode_t ret;
-#endif
 
     if (buf == NULL || len == 0U) {
         return -1;
     }
-#if ST7789_SOFT_SPI_ENABLE
-    /* DC is selected by the caller; this helper only pushes bytes. */
-    st7789_cs(1U);
-    for (i = 0U; i < len; i++) {
-        st7789_soft_spi_write_u8(buf[i]);
-    }
-    st7789_spi_idle_level();
-    st7789_cs(0U);
-    return 0;
-#else
     data.tx_buff = (uint8_t *)buf;
     data.tx_bytes = len;
     st7789_cs(1U);
     ret = uapi_spi_master_write(g_st7789_cfg.spi_bus, &data, ST7789_SPI_TIMEOUT);
     st7789_cs(0U);
     return ret == ERRCODE_SUCC ? 0 : -1;
-#endif
 }
 
 static int st7789_cmd(uint8_t cmd)
@@ -556,7 +479,6 @@ static void st7789_fill_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uin
     if ((uint32_t)y + h > g_st7789_cfg.height) {
         h = (uint16_t)(g_st7789_cfg.height - y);
     }
-#if !ST7789_SOFT_SPI_ENABLE
     /* Hardware SPI can reuse one encoded scanline instead of per-pixel writes. */
     uint8_t line[240 * 2];
 
@@ -567,19 +489,12 @@ static void st7789_fill_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uin
         line[col * 2U] = (uint8_t)(color >> 8U);
         line[col * 2U + 1U] = (uint8_t)color;
     }
-#endif
     if (st7789_addr_window(x, y, (uint16_t)(x + w - 1U), (uint16_t)(y + h - 1U)) != 0) {
         return;
     }
     st7789_dc(1U);
     st7789_cs(1U);
     for (row = 0U; row < h; row++) {
-#if ST7789_SOFT_SPI_ENABLE
-        for (col = 0U; col < w; col++) {
-            st7789_soft_spi_write_u8((uint8_t)(color >> 8U));
-            st7789_soft_spi_write_u8((uint8_t)color);
-        }
-#else
         spi_xfer_data_t data = {0};
 
         data.tx_buff = line;
@@ -587,9 +502,7 @@ static void st7789_fill_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uin
         if (uapi_spi_master_write(g_st7789_cfg.spi_bus, &data, ST7789_SPI_TIMEOUT) != ERRCODE_SUCC) {
             break;
         }
-#endif
     }
-    st7789_spi_idle_level();
     st7789_cs(0U);
 }
 
@@ -658,24 +571,19 @@ static void st7789_draw_text(uint16_t x, uint16_t y, const char *text, uint16_t 
 
 static void st7789_init_pins(void)
 {
-    /* Put every display signal under GPIO control before the panel reset pulse. */
+    /* Put CS/DC/RESET under GPIO control before the panel reset pulse. */
     (void)uapi_pin_set_mode(g_st7789_cfg.cs_pin, HAL_PIO_FUNC_GPIO);
     (void)uapi_gpio_set_dir(g_st7789_cfg.cs_pin, GPIO_DIRECTION_OUTPUT);
     st7789_cs(0U);
-    osal_msleep(ST7789_CS_LOW_SETTLE_MS);
+    osal_msleep(ST7789_CS_IDLE_SETTLE_MS);
 
-    (void)uapi_pin_set_mode(g_st7789_cfg.sclk_pin, HAL_PIO_FUNC_GPIO);
-    (void)uapi_pin_set_mode(g_st7789_cfg.mosi_pin, HAL_PIO_FUNC_GPIO);
+    /* SCLK/MOSI are handed to the SDK SPI controller by uapi_spi_init(). */
     (void)uapi_pin_set_mode(g_st7789_cfg.dc_pin, HAL_PIO_FUNC_GPIO);
     (void)uapi_pin_set_mode(g_st7789_cfg.reset_pin, HAL_PIO_FUNC_GPIO);
-    (void)uapi_gpio_set_dir(g_st7789_cfg.sclk_pin, GPIO_DIRECTION_OUTPUT);
-    (void)uapi_gpio_set_dir(g_st7789_cfg.mosi_pin, GPIO_DIRECTION_OUTPUT);
     (void)uapi_gpio_set_dir(g_st7789_cfg.dc_pin, GPIO_DIRECTION_OUTPUT);
     (void)uapi_gpio_set_dir(g_st7789_cfg.reset_pin, GPIO_DIRECTION_OUTPUT);
     (void)uapi_gpio_set_val(g_st7789_cfg.reset_pin, GPIO_LEVEL_HIGH);
     st7789_dc(0U);
-    st7789_spi_idle_level();
-    st7789_mosi(0U);
     st7789_cs(0U);
 }
 
@@ -694,10 +602,6 @@ static void st7789_hw_reset(void)
 
 static int st7789_spi_init(void)
 {
-#if ST7789_SOFT_SPI_ENABLE
-    /* GPIO soft-SPI needs no SDK SPI controller setup. */
-    return 0;
-#else
     spi_attr_t attr = {0};
     spi_extra_attr_t extra = {0};
 
@@ -714,7 +618,6 @@ static int st7789_spi_init(void)
     attr.sste = 1;
     extra.qspi_param.wait_cycles = ST7789_SPI_WAIT_CYCLES;
     return uapi_spi_init(g_st7789_cfg.spi_bus, &attr, &extra) == ERRCODE_SUCC ? 0 : -1;
-#endif
 }
 
 static int st7789_init_sequence(void)
@@ -839,6 +742,7 @@ static int st7789_push_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, cons
 {
     uint16_t row;
     uint16_t col;
+    uint8_t line[240 * 2];
 
     if (pixels == NULL || w == 0U || h == 0U) {
         return -1;
@@ -846,32 +750,31 @@ static int st7789_push_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, cons
     if ((uint32_t)x + w > g_st7789_cfg.width || (uint32_t)y + h > g_st7789_cfg.height) {
         return -1;
     }
+    if (w > (uint16_t)(sizeof(line) / 2U)) {
+        return -1;
+    }
     if (st7789_addr_window(x, y, (uint16_t)(x + w - 1U), (uint16_t)(y + h - 1U)) != 0) {
         return -1;
     }
-    /* LVGL hands us raw RGB565 pixels; the panel wants the same layout. */
+    /* LVGL gives host-endian RGB565; ST7789 SPI wants high byte first. */
     st7789_dc(1U);
     st7789_cs(1U);
     for (row = 0U; row < h; row++) {
         const uint16_t *row_pixels = pixels + (uint32_t)row * w;
-#if ST7789_SOFT_SPI_ENABLE
-        for (col = 0U; col < w; col++) {
-            uint16_t px = row_pixels[col];
-            st7789_soft_spi_write_u8((uint8_t)(px >> 8U));
-            st7789_soft_spi_write_u8((uint8_t)px);
-        }
-#else
         spi_xfer_data_t data = {0};
 
-        data.tx_buff = (uint8_t *)row_pixels;
+        for (col = 0U; col < w; col++) {
+            uint16_t px = row_pixels[col];
+            line[col * 2U] = (uint8_t)(px >> 8U);
+            line[col * 2U + 1U] = (uint8_t)px;
+        }
+        data.tx_buff = line;
         data.tx_bytes = (uint32_t)w * 2U;
         if (uapi_spi_master_write(g_st7789_cfg.spi_bus, &data, ST7789_SPI_TIMEOUT) != ERRCODE_SUCC) {
             st7789_cs(0U);
             return -1;
         }
-#endif
     }
-    st7789_spi_idle_level();
     st7789_cs(0U);
     return 0;
 }
@@ -1025,8 +928,8 @@ int ws63_st7789_init(const ws63_st7789_config_t *cfg)
     (void)memcpy_s(&g_st7789_cfg, sizeof(g_st7789_cfg), cfg, sizeof(*cfg));
     g_st7789_ready = 0U;
     st7789_init_pins();
-    osal_printk("[display] st7789 pins primed cs=%u held-low settle_ms=%u dc=%u rst=%u\r\n",
-        g_st7789_cfg.cs_pin, (uint8_t)ST7789_CS_LOW_SETTLE_MS,
+    osal_printk("[display] st7789 pins primed cs=%u idle-high settle_ms=%u dc=%u rst=%u\r\n",
+        g_st7789_cfg.cs_pin, (uint8_t)ST7789_CS_IDLE_SETTLE_MS,
         g_st7789_cfg.dc_pin, g_st7789_cfg.reset_pin);
     if (st7789_spi_init() != 0) {
         osal_printk("[display] st7789 spi init failed\r\n");
@@ -1067,12 +970,8 @@ int ws63_st7789_init(const ws63_st7789_config_t *cfg)
         g_st7789_cfg.sclk_pin, g_st7789_cfg.mosi_pin, g_st7789_cfg.cs_pin,
         (uint8_t)CONFIG_SLE_TEAM_ST7789_CS_ALWAYS_LOW, g_st7789_cfg.dc_pin,
         g_st7789_cfg.reset_pin);
-#if ST7789_SOFT_SPI_ENABLE
-    osal_printk("[display] soft-spi enabled mode=%u (cpol=%u cpha=%u)\r\n",
-        (uint32_t)(ST7789_SOFT_SPI_MODE3 ? 3U : 0U),
-        (uint32_t)(ST7789_SOFT_SPI_MODE3 ? 1U : 0U),
-        (uint32_t)(ST7789_SOFT_SPI_MODE3 ? 1U : 0U));
-#endif
+    osal_printk("[display] hardware spi enabled bus=%u (cs=%u dc=%u rst=%u)\r\n",
+        g_st7789_cfg.spi_bus, g_st7789_cfg.cs_pin, g_st7789_cfg.dc_pin, g_st7789_cfg.reset_pin);
     return 0;
 }
 

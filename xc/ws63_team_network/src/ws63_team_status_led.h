@@ -19,6 +19,8 @@ void ws63_team_status_led_child(void);
 void ws63_team_status_led_joining(void);
 void ws63_team_status_led_lost(void);
 void ws63_team_status_led_off(void);
+void ws63_team_status_led_hold_low(uint8_t enable);
+uint8_t ws63_team_status_led_hold_low_active(void);
 void ws63_team_status_led_tick(uint32_t now_ms);
 
 #endif

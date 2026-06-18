@@ -94,7 +94,7 @@ function isConfiguredStatus(status?: TeamStatus | UnconfiguredStatus): status is
 }
 
 function isStartingStatus(status?: TeamStatus | UnconfiguredStatus): boolean {
-  return status !== undefined && status.configured === false && status.roleRequestPending === true;
+  return status !== undefined && !isConfiguredStatus(status) && status.roleRequestPending === true;
 }
 
 function statusTeam(status?: TeamStatus | UnconfiguredStatus): string | number {
@@ -211,16 +211,105 @@ function assertConfigResultOk(result: DeviceConfigResult): void {
   }
 }
 
+function onlineNodeCount(): number {
+  if (state.status && typeof state.status.onlineNodeCount === "number") {
+    return state.status.onlineNodeCount;
+  }
+  if (isConfiguredStatus(state.status) && state.status.role === "leader") {
+    return 1 + state.nodes.filter((node) => node.online).length;
+  }
+  if (state.nodes.some((node) => node.online)) {
+    return state.nodes.filter((node) => node.online).length;
+  }
+  return isConfiguredStatus(state.status) && state.status.joined ? 1 : 0;
+}
+
+function relayNodeCount(): number {
+  if (state.status && typeof state.status.relayNodeCount === "number") {
+    return state.status.relayNodeCount;
+  }
+  return state.nodes.filter((node) => node.online && node.relayAllowed).length;
+}
+
+function topologyLeaderLabel(): string {
+  if (!isConfiguredStatus(state.status)) return "Leader";
+  if (state.status.role === "leader") {
+    return state.status.macSuffix ? `L${state.status.macSuffix}` : `L${state.status.selfId}`;
+  }
+  return `L${state.status.leaderId}`;
+}
+
+function nodeLabel(node: TeamNode): string {
+  const prefix = node.role === "leader" ? "L" : node.relayAllowed ? "R" : "M";
+  return node.macSuffix ? `${prefix}${node.macSuffix}` : `${prefix}${node.id}`;
+}
+
+function parentLabel(parentId?: number): string {
+  if (!isConfiguredStatus(state.status)) return "--";
+  if (!parentId || parentId === state.status.leaderId || parentId === state.status.selfId) {
+    return topologyLeaderLabel();
+  }
+  const parent = state.nodes.find((node) => node.id === parentId);
+  return parent ? nodeLabel(parent) : `N${parentId}`;
+}
+
+function renderTopologyPanel(): string {
+  const configuredStatus = isConfiguredStatus(state.status) ? state.status : undefined;
+  const rows =
+    state.nodes.length === 0
+      ? `<div class="empty-state">No node data yet</div>`
+      : state.nodes
+          .map((node) => {
+            const classes = ["topology-node", node.online ? "online" : "offline", node.relayAllowed ? "relay" : "member"]
+              .filter(Boolean)
+              .join(" ");
+            return `
+              <div class="topology-row">
+                <span class="topology-parent">${escapeHtml(parentLabel(node.parentId))}</span>
+                <span class="topology-edge">→</span>
+                <span class="${classes}">${escapeHtml(nodeLabel(node))}</span>
+                <span class="topology-meta">
+                  ${node.online ? "online" : "offline"}
+                  ${node.relayAllowed ? "relay" : "member"}
+                  parent=${node.parentId ?? 0}
+                  next=${node.nextHopId ?? 0}
+                  children=${node.childCount ?? 0}
+                </span>
+              </div>
+            `;
+          })
+          .join("");
+  return `
+    <section class="panel topology-panel">
+      <div class="panel-head">
+        <h2>${icon(GitBranch, 17)} Topology</h2>
+        <span class="mode-badge">updates every 2s</span>
+      </div>
+      <div class="topology-summary">
+        <div><span>Leader</span><strong>${escapeHtml(topologyLeaderLabel())}</strong></div>
+        <div><span>Online Nodes</span><strong>${onlineNodeCount()}</strong></div>
+        <div><span>Relay Nodes</span><strong>${relayNodeCount()}</strong></div>
+        <div><span>Joined</span><strong>${configuredStatus?.joined ? "yes" : configuredStatus ? "leader" : "--"}</strong></div>
+      </div>
+      <div class="topology-graph">
+        ${configuredStatus ? `<div class="topology-root">${escapeHtml(topologyLeaderLabel())}</div>` : ""}
+        ${rows}
+      </div>
+    </section>
+  `;
+}
+
 function renderOverview(): string {
   return `
     ${renderConnectionPanel("compact")}
     ${renderControlPanel()}
     <section class="summary-grid">
-      ${metric("节点", String(state.nodes.length), Cpu)}
-      ${metric("在线", String(state.nodes.filter((node) => node.online).length), Wifi)}
+      ${metric("节点", String(onlineNodeCount()), Cpu)}
+      ${metric("Relay", String(relayNodeCount()), GitBranch)}
       ${metric("消息", String(state.events.length), TerminalSquare)}
       ${metric("入网", isConfiguredStatus(state.status) && state.status.joined ? "Yes" : "No", CircleDot)}
     </section>
+    ${renderTopologyPanel()}
     ${renderMinimalRoute()}
     ${renderLocationPanel()}
     <section class="two-column">
@@ -272,9 +361,11 @@ function renderNode(node: TeamNode): string {
         ${node.macSuffix ? `<span>MAC ${escapeHtml(node.macSuffix)}</span>` : ""}
         <span>${icon(Battery, 15)}${percent(node.batteryPercent)}</span>
         <span>${rssiText}</span>
+        ${node.self ? `<span>self</span>` : ""}
         ${node.relayAllowed ? `<span>relay tier ${node.relayTier ?? 0}</span>` : ""}
         ${node.maxDownstream !== undefined ? `<span>down ${node.maxDownstream}</span>` : ""}
         ${node.parentId !== undefined ? `<span>parent ${node.parentId}</span>` : ""}
+        ${node.nextHopId !== undefined ? `<span>next ${node.nextHopId}</span>` : ""}
         ${node.childCount !== undefined ? `<span>children ${node.childCount}</span>` : ""}
         <span>seq ${node.lastSeq}</span>
         <span class="${node.online ? "online" : "offline"}">${node.online ? "online" : "offline"}</span>
@@ -1128,9 +1219,9 @@ window.setInterval(() => {
   if (state.connection.mode === "wifi") {
     void refresh();
   }
-}, 5000);
+}, 2000);
 window.setInterval(() => {
   if (state.connection.mode === "serial") {
     void refresh();
   }
-}, 15000);
+}, 5000);
