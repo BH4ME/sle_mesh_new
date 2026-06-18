@@ -37,22 +37,29 @@ extern "C" {
 /* Descriptor Property */
 #define SLE_UUID_TEST_DESCRIPTOR   (SSAP_PERMISSION_READ | SSAP_PERMISSION_WRITE)
 
+/* Server role bootstrap: SSAP service registration plus connectable advertising. */
 errcode_t sle_uart_server_init(ssaps_read_request_callback ssaps_read_callback, ssaps_write_request_callback
     ssaps_write_callback);
 
 errcode_t sle_uart_server_send_report_by_uuid(const uint8_t *data, uint8_t len);
 
+/* Send helpers for leader/relay downstream packets. */
 errcode_t sle_uart_server_send_report_by_handle(const uint8_t *data, uint16_t len);
 errcode_t sle_uart_server_send_report_by_conn(uint16_t conn_id, const uint8_t *data, uint16_t len);
+
+/* Map SDK connection IDs to logical member route IDs. */
 uint8_t sle_uart_server_bind_member_conn(uint8_t member_id, uint16_t conn_id);
 uint16_t sle_uart_server_find_conn_by_member(uint8_t member_id);
 uint8_t sle_uart_server_find_conn_by_member_ex(uint8_t member_id, uint16_t *conn_id);
 uint8_t sle_uart_server_has_conn(uint16_t conn_id);
+
+/* SDK callback entry points forwarded by the app-level connection manager. */
 void sle_uart_server_handle_connect_state_changed(uint16_t conn_id, const sle_addr_t *addr,
     sle_acb_state_t conn_state, sle_pair_state_t pair_state, sle_disc_reason_t disc_reason);
 void sle_uart_server_handle_pair_complete(uint16_t conn_id, const sle_addr_t *addr, errcode_t status);
 void sle_uart_server_handle_read_rssi(uint16_t conn_id, int8_t rssi, errcode_t status);
 
+/* Diagnostics and connection-management helpers. */
 uint16_t sle_uart_server_connected_count(void);
 /* Backward-compatible alias, kept for existing call sites. */
 uint16_t sle_uart_client_is_connected(void);

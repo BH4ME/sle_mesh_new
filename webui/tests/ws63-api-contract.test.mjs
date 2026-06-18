@@ -61,8 +61,8 @@ test("WS63 API contract lists the current board HTTP routes", () => {
 });
 
 test("firmware exposes the minimal rewrite version and config surface", () => {
-  assert.match(firmwareSource, /#define SLE_TEAM_FW_VERSION "v4\.5\.45-minimal"/);
-  assert.match(firmwareSource, /#define SLE_TEAM_FW_COMPAT 0x0546U/);
+  assert.match(firmwareSource, /#define SLE_TEAM_FW_VERSION "v4\.5\.56-minimal"/);
+  assert.match(firmwareSource, /#define SLE_TEAM_FW_COMPAT 0x0556U/);
   assert.match(firmwareSource, /team_fw_compat_from_adv_data/);
   assert.match(firmwareSource, /drop rejected hello/);
   assert.match(firmwareSource, /#define SLE_TEAM_HW_CONSTRAINTS "minimal leader\/member\/relay rewrite"/);
@@ -80,6 +80,10 @@ test("firmware exposes the minimal rewrite version and config surface", () => {
   assert.match(firmwareSource, /runtimeRelayCount/);
   assert.match(firmwareSource, /runtimeOnlineCount/);
   assert.match(firmwareSource, /runtimeParent/);
+  assert.match(firmwareSource, /roleRequestPending/);
+  assert.match(firmwareSource, /team_request_role_config/);
+  assert.match(firmwareSource, /team_handle_role_request_once/);
+  assert.match(firmwareHttpSource, /starting SLE/);
   assert.match(firmwareSource, /lastRoleRet/);
   assert.doesNotMatch(firmwareSource, /runtimeRelayBudget/);
   assert.doesNotMatch(firmwareSource, /runtimeNetworkStage/);
@@ -130,7 +134,9 @@ test("minimal status API has no frozen topology metrics or reselect fields", () 
   assert.doesNotMatch(typesSource, /RouteMetrics/);
   assert.doesNotMatch(typesSource, /routeMetrics/);
   assert.doesNotMatch(typesSource, /upstreamParentReselectPending/);
-  assert.doesNotMatch(clientSource, /roleRequest/);
+  assert.match(typesSource, /roleRequestPending/);
+  assert.match(clientSource, /roleRequestPending/);
+  assert.match(mainSource, /isStartingStatus/);
   assert.doesNotMatch(clientSource, /LeaderNetworkStage/);
   assert.doesNotMatch(mainSource, /renderRouteMetrics/);
   assert.match(mainSource, /renderMinimalRoute/);

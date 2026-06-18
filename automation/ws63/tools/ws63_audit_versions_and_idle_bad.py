@@ -16,7 +16,7 @@ import serial
 from serial.tools import list_ports
 
 
-DEFAULT_EXPECTED_FW = "v4.5.46-minimal"
+DEFAULT_EXPECTED_FW = "v4.5.56-minimal"
 CFG_JSON_RE = re.compile(r"\[cfg-json\]\s*(\{[^\r\n]*\})")
 
 

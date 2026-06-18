@@ -14,6 +14,7 @@ static void sle_team_cli_puts(sle_team_cli_t *cli, const char *text)
     }
 }
 
+/* Small printf wrapper so all CLI output goes through the board print callback. */
 static void sle_team_cli_printf(sle_team_cli_t *cli, const char *fmt, ...)
 {
     char buf[256];
@@ -29,6 +30,7 @@ static void sle_team_cli_printf(sle_team_cli_t *cli, const char *fmt, ...)
     cli->print(cli->user_ctx, buf);
 }
 
+/* Parse unsigned integers from CLI text while enforcing a numeric range. */
 static int parse_u32(const char *s, uint32_t min_value, uint32_t max_value, uint32_t *out)
 {
     char *end = NULL;
@@ -47,6 +49,7 @@ static int parse_u32(const char *s, uint32_t min_value, uint32_t max_value, uint
     return 0;
 }
 
+/* Parse signed integers for coordinates, RSSI, and other signed fields. */
 static int parse_i32(const char *s, int32_t min_value, int32_t max_value, int32_t *out)
 {
     char *end = NULL;
@@ -65,6 +68,7 @@ static int parse_i32(const char *s, int32_t min_value, int32_t max_value, int32_
     return 0;
 }
 
+/* Convert core error codes into short human-readable CLI reasons. */
 static const char *sle_team_cli_err_name(int ret)
 {
     switch (ret) {
@@ -83,6 +87,7 @@ static const char *sle_team_cli_err_name(int ret)
     }
 }
 
+/* Uniform success/fail printout for all packet-sending commands. */
 static void sle_team_cli_print_send_result(sle_team_cli_t *cli, const char *type, uint8_t dst_id, int ret)
 {
     if (ret == SLE_TEAM_OK) {
@@ -93,6 +98,7 @@ static void sle_team_cli_print_send_result(sle_team_cli_t *cli, const char *type
     }
 }
 
+/* CLI uses a short label so repeated member lines are easier to scan. */
 static void sle_team_cli_format_member_label(const sle_team_member_record_t *member, char *out, size_t out_size)
 {
     if (out == NULL || out_size == 0U) {
@@ -109,6 +115,7 @@ static void sle_team_cli_format_member_label(const sle_team_member_record_t *mem
     (void)snprintf(out, out_size, "M--");
 }
 
+/* Pending approvals get the same compact label style as active members. */
 static void sle_team_cli_format_pending_label(const sle_team_pending_member_t *pending, char *out, size_t out_size)
 {
     if (out == NULL || out_size == 0U) {
@@ -185,6 +192,7 @@ void sle_team_cli_handle_line(sle_team_cli_t *cli, const char *line)
         return;
     }
 
+    /* Each command is a thin shell around one core packet/state-machine call. */
     if (strcmp(argv[0], "help") == 0) {
         sle_team_cli_print_help(cli);
         return;
@@ -291,6 +299,7 @@ void sle_team_cli_handle_line(sle_team_cli_t *cli, const char *line)
     }
 
     if (strcmp(argv[0], "members") == 0) {
+        /* Show every record that still matters: online, pending, or position-known. */
         for (i = 0; i < (int)SLE_TEAM_MAX_MEMBERS; i++) {
             char member_label[8];
             member = &cli->node->members[i];
@@ -316,6 +325,7 @@ void sle_team_cli_handle_line(sle_team_cli_t *cli, const char *line)
         int ret;
 
         if (argc == 1) {
+            /* No args means read back the current admission filter. */
             if (cli->node->cfg.member_filter_enabled == 0U) {
                 sle_team_cli_puts(cli, "allow=all");
             } else {
@@ -371,6 +381,7 @@ void sle_team_cli_handle_line(sle_team_cli_t *cli, const char *line)
         int ret;
 
         if (argc < 2 || strcmp(argv[1], "pending") == 0) {
+            /* Pending list shows HELLOs waiting for a leader approval decision. */
             for (i = 0; i < (int)SLE_TEAM_MAX_MEMBERS; i++) {
                 const sle_team_pending_member_t *pending = &cli->node->pending_members[i];
                 if (pending->active != 0U) {
@@ -437,6 +448,7 @@ void sle_team_cli_handle_line(sle_team_cli_t *cli, const char *line)
     }
 
     if (strcmp(argv[0], "leave") == 0) {
+        /* Core sends the leave alert if joined, then clears local member state. */
         int ret = sle_team_node_member_leave(cli->node);
         sle_team_cli_printf(cli, "leave ret=%d", ret);
         return;

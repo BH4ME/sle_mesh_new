@@ -7,6 +7,7 @@
 extern "C" {
 #endif
 
+/* Text command shim for UART console, tests, and board-side debug scripts. */
 typedef void (*sle_team_cli_print_fn)(void *user_ctx, const char *text);
 
 typedef struct {

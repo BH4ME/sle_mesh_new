@@ -16,11 +16,17 @@
 #define WS63_WS2812_GPIO_DATA_CLR_OFFSET 0x34U
 #define WS63_WS2812_RESET_US 320U
 #define WS63_WS2812_CALIBRATE_US 1000U
-#define WS63_WS2812_BOOT_TEST_MS 60U
 #define WS63_WS2812_T0H_NS 350U
 #define WS63_WS2812_T1H_NS 700U
 #define WS63_WS2812_SLOT_NS 1250U
 
+/*
+ * Raw WS2812 bit-banged driver.
+ *
+ * WS2812 LEDs are timing-sensitive and expect bytes in GRB order. We bypass
+ * slow GPIO APIs during the data waveform by writing GPIO set/clear registers
+ * directly and keeping interrupts locked for the 24-bit frame.
+ */
 typedef struct {
     volatile uint32_t *set_reg;
     volatile uint32_t *clr_reg;
@@ -34,6 +40,7 @@ typedef struct {
 
 static ws63_ws2812_ctx_t g_ws2812;
 
+/* Cycle counter gives sub-microsecond waits for the LED waveform. */
 static uint32_t ws63_ws2812_now_cycles(void)
 {
     uint32_t cycles;
@@ -42,6 +49,7 @@ static uint32_t ws63_ws2812_now_cycles(void)
     return cycles;
 }
 
+/* Busy-wait until the absolute cycle deadline, wrap-safe for short intervals. */
 static void ws63_ws2812_wait_until(uint32_t target)
 {
     while ((int32_t)(target - ws63_ws2812_now_cycles()) > 0) {
@@ -54,6 +62,7 @@ static uint32_t ws63_ws2812_cycles_from_ns(uint32_t cycles_per_us, uint32_t ns)
     return cycles == 0U ? 1U : cycles;
 }
 
+/* Measure CPU cycles/us at boot so the timing survives clock changes. */
 static void ws63_ws2812_calibrate_timing(void)
 {
     uint32_t start = ws63_ws2812_now_cycles();
@@ -72,6 +81,7 @@ static void ws63_ws2812_calibrate_timing(void)
     }
 }
 
+/* WS63 GPIOs are split into groups; this maps a pin to its register base. */
 static uintptr_t ws63_ws2812_gpio_base(uint8_t pin)
 {
     if (pin <= 7U) {
@@ -93,6 +103,7 @@ static void ws63_ws2812_pin_low(void)
     *g_ws2812.clr_reg = g_ws2812.mask;
 }
 
+/* Write one WS2812 bit: high time encodes 0 or 1, total slot stays fixed. */
 static void ws63_ws2812_write_bit(uint8_t bit)
 {
     uint32_t start;
@@ -117,6 +128,7 @@ static void ws63_ws2812_write_byte(uint8_t value)
 
 void ws63_ws2812_encode_grb(uint8_t red, uint8_t green, uint8_t blue, uint8_t out[3])
 {
+    /* WS2812 wire order is green, red, blue, not RGB. */
     if (out == 0) {
         return;
     }
@@ -152,14 +164,9 @@ int ws63_ws2812_init(uint8_t pin)
     g_ws2812.pin = pin;
     ws63_ws2812_calibrate_timing();
     g_ws2812.ready = 1U;
+    /* Start from a dark latch; the status layer owns all visible animation. */
     ws63_ws2812_pin_low();
     (void)uapi_tcxo_delay_us(WS63_WS2812_RESET_US);
-    (void)ws63_ws2812_set_rgb(3U, 0U, 0U);
-    osal_msleep(WS63_WS2812_BOOT_TEST_MS);
-    (void)ws63_ws2812_set_rgb(0U, 3U, 0U);
-    osal_msleep(WS63_WS2812_BOOT_TEST_MS);
-    (void)ws63_ws2812_set_rgb(0U, 0U, 3U);
-    osal_msleep(WS63_WS2812_BOOT_TEST_MS);
     (void)ws63_ws2812_clear();
     return 0;
 }
@@ -174,6 +181,7 @@ int ws63_ws2812_set_rgb(uint8_t red, uint8_t green, uint8_t blue)
     }
 
     ws63_ws2812_encode_grb(red, green, blue, encoded);
+    /* Interrupts are locked only around the short 24-bit waveform. */
     irq_sts = osal_irq_lock();
     ws63_ws2812_write_byte(encoded[0]);
     ws63_ws2812_write_byte(encoded[1]);

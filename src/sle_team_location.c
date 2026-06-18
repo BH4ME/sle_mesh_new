@@ -2,11 +2,13 @@
 
 #include <string.h>
 
+/* Location helpers live outside the core file to keep GPS/Web fallback logic small. */
 static uint8_t sle_team_location_valid_id(uint8_t member_id)
 {
     return (uint8_t)(member_id != 0U && member_id != SLE_TEAM_BROADCAST_ID);
 }
 
+/* Use the node clock when available; tests can pass no clock and get 0. */
 static uint32_t sle_team_location_now(const sle_team_node_t *node)
 {
     if (node == NULL || node->ops.now_s == NULL) {
@@ -15,6 +17,7 @@ static uint32_t sle_team_location_now(const sle_team_node_t *node)
     return node->ops.now_s(node->ops.user_ctx);
 }
 
+/* Find or create a member table slot that can hold last-known position data. */
 static sle_team_member_record_t *sle_team_location_slot(sle_team_node_t *node, uint8_t member_id)
 {
     uint8_t i;
@@ -52,6 +55,11 @@ int sle_team_node_record_local_position(sle_team_node_t *node, const sle_team_po
     if (member == NULL) {
         return SLE_TEAM_ERR_BUF;
     }
+    /*
+     * The leader can also publish its own phone/Wi-Fi/GPS fallback location.
+     * It is stored in the same table shape as member positions so the Web API
+     * can render one node list instead of special-casing the leader.
+     */
     member->role = SLE_TEAM_ROLE_LEADER;
     member->battery_percent = pos->battery_percent;
     member->fix_status = pos->fix_status;

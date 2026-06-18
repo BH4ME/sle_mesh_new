@@ -34,6 +34,7 @@ set(SOURCES_LIST
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ws63_ws2812.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ws63_team_status_led.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ws63_team_gps.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/ws63_team_power.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ws63_team_http.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ws63_team_network_app.c
 )

@@ -93,6 +93,10 @@ function isConfiguredStatus(status?: TeamStatus | UnconfiguredStatus): status is
   return status !== undefined && status.configured !== false && "teamId" in status;
 }
 
+function isStartingStatus(status?: TeamStatus | UnconfiguredStatus): boolean {
+  return status !== undefined && status.configured === false && status.roleRequestPending === true;
+}
+
 function statusTeam(status?: TeamStatus | UnconfiguredStatus): string | number {
   return isConfiguredStatus(status) ? status.teamId : "--";
 }
@@ -144,7 +148,7 @@ function renderShell(): void {
           <div class="mini-grid">
             <span>Team</span><strong>${statusTeam(status)}</strong>
             <span>Self</span><strong>${statusSelf(status)}</strong>
-            <span>State</span><strong>${isConfiguredStatus(status) ? stateLabel(status.state) : status ? "Unconfigured" : "--"}</strong>
+            <span>State</span><strong>${isConfiguredStatus(status) ? stateLabel(status.state) : isStartingStatus(status) ? "Starting" : status ? "Unconfigured" : "--"}</strong>
           </div>
         </section>
       </aside>
@@ -152,7 +156,7 @@ function renderShell(): void {
         <header class="topbar">
           <div>
             <h1>${isConfiguredStatus(status) ? `Team ${status.teamId} ${roleLabel(status.role)}` : "Team Console"}</h1>
-            <p>${isConfiguredStatus(status) ? statusSubtitle(status) : status ? `device=${status.selfLabel} route=${status.routeId} ssid=${status.ssid}` : connectionHint()}</p>
+            <p>${isConfiguredStatus(status) ? statusSubtitle(status) : status ? `device=${status.selfLabel} route=${status.routeId} ssid=${status.ssid}${isStartingStatus(status) ? " starting" : ""}` : connectionHint()}</p>
           </div>
           <button class="icon-button" data-action="refresh" title="刷新">
             ${icon(RefreshCw, 18)}
@@ -644,7 +648,7 @@ function renderBulkConfigPanel(): string {
         <div><span>NV Team</span><strong>${config?.nvValid ? config.nvTeam : "--"}</strong></div>
         <div><span>NV Channel</span><strong>${config?.nvValid ? config.nvChannel : "--"}</strong></div>
         <div><span>Leader Suffix</span><strong>${config?.nvValid ? config.nvLeaderSuffix : "--"}</strong></div>
-        <div><span>Runtime</span><strong>${config?.runtimeConfigured ? config.runtimeRole : "unconfigured"}</strong></div>
+        <div><span>Runtime</span><strong>${config?.runtimeConfigured ? config.runtimeRole : config?.roleRequestPending ? `starting ${config.roleRequestRole}` : "unconfigured"}</strong></div>
         <div><span>Self Suffix</span><strong>${config?.selfSuffix ?? "--"}</strong></div>
       </div>
       <form class="bulk-config-form" data-form="bulk-config">

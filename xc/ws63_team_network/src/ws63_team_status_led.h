@@ -3,6 +3,13 @@
 
 #include <stdint.h>
 
+/*
+ * High-level WS2812 status policy for the team firmware.
+ *
+ * The network task calls one of the state setters as its role changes, then
+ * calls tick() periodically. The implementation keeps one status/color active
+ * at a time and applies the v4.5 low-brightness breathing curves.
+ */
 void ws63_team_status_led_init(void);
 void ws63_team_status_led_idle(void);
 void ws63_team_status_led_leader(void);

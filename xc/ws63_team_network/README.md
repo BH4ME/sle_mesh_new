@@ -42,7 +42,7 @@ powershell -ExecutionPolicy Bypass -File scripts/serial/ws63_serial_cfg.ps1 -Por
 ## 板端 WebUI
 
 ```text
-SSID: SLE-TEAM-V4-XXXX
+SSID: SLE-XXXX
 Password: 123456789
 URL: http://192.168.43.1/
 ```

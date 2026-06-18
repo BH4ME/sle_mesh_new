@@ -24,6 +24,13 @@
 #define CONFIG_SLE_TEAM_GPS_BAUDRATE 9600
 #endif
 
+/*
+ * GPS helper for the board app.
+ *
+ * The UART ISR feeds NMEA bytes into the parser, the parser caches the latest
+ * valid fix, and the networking task periodically publishes that fix to the
+ * leader only when the local node is a joined member.
+ */
 #define WS63_TEAM_GPS_RX_BUF_SIZE 256U
 #define WS63_TEAM_GPS_LINE_SIZE 96U
 
@@ -52,8 +59,11 @@ static void gps_rx_cb(const void *buffer, uint16_t length, bool error)
     if (error || data == NULL) {
         return;
     }
+    /* UART callback receives arbitrary byte chunks, not complete NMEA lines.
+     * Feed bytes one at a time; the parser returns SLE_TEAM_OK only when a
+     * complete supported sentence has produced a position body. */
     for (i = 0U; i < length; i++) {
-        sle_team_pos_body_t pos;
+        sle_team_pos_body_t pos = {0};
         int ret = sle_team_nmea_feed(&g_gps.nmea, (char)data[i], g_gps.line_buf,
             sizeof(g_gps.line_buf), &g_gps.line_len, &pos);
 
@@ -81,6 +91,8 @@ void ws63_team_gps_init(void)
     };
     errcode_t ret;
 
+    /* GPS is optional hardware. When enabled, this task only initializes UART
+     * and caches the latest fix; network transmission happens from tick(). */
     (void)memset_s(&g_gps, sizeof(g_gps), 0, sizeof(g_gps));
     sle_team_nmea_init(&g_gps.nmea);
     (void)uapi_pin_set_mode(CONFIG_SLE_TEAM_GPS_UART_TXD_PIN, PIN_MODE_1);
@@ -101,8 +113,10 @@ void ws63_team_gps_init(void)
 #endif
 }
 
-void ws63_team_gps_tick(sle_team_node_t *node, uint32_t now_ms)
+void ws63_team_gps_tick(sle_team_node_t *node, uint32_t now_ms, uint8_t battery_percent)
 {
+    /* Members periodically report their latest valid GPS fix to the leader.
+     * Leaders do not send GPS upstream, and no packet is sent before a fix. */
     if (node == NULL || g_gps.ready == 0U || g_gps.has_fix == 0U ||
         node->cfg.role != SLE_TEAM_ROLE_MEMBER || node->joined == 0U ||
         node->cfg.report_interval_s == 0U) {
@@ -113,6 +127,6 @@ void ws63_team_gps_tick(sle_team_node_t *node, uint32_t now_ms)
         return;
     }
     g_gps.last_report_ms = now_ms;
-    g_gps.last_pos.battery_percent = 100U;
+    g_gps.last_pos.battery_percent = battery_percent;
     (void)sle_team_node_send_position(node, node->cfg.leader_id, &g_gps.last_pos);
 }

@@ -53,6 +53,15 @@ export interface UnconfiguredStatus {
   macSuffix: string;
   ssid: string;
   transport: "ws63-softap" | "ws63-http" | "hosted-http" | "serial";
+  roleRequestPending?: boolean;
+  roleRequestRole?: ConfigRole;
+  roleRequestRoleValue?: number;
+  roleRequestTeam?: number;
+  roleRequestChannel?: number;
+  roleRequestLeader?: number;
+  roleRequestLeaderSuffix?: string;
+  roleRequestLeaderTerm?: number;
+  roleRequestLastRet?: number;
 }
 
 export interface TeamNode {
@@ -181,6 +190,15 @@ export interface DeviceConfigStatus {
   runtimeJoined: number;
   runtimeParent: number;
   runtimeRelayEnabled: number;
+  roleRequestPending: boolean;
+  roleRequestRole: ConfigRole;
+  roleRequestRoleValue: number;
+  roleRequestTeam: number;
+  roleRequestChannel: number;
+  roleRequestLeader: number;
+  roleRequestLeaderSuffix: string;
+  roleRequestLeaderTerm: number;
+  roleRequestLastRet: number;
   lastRoleRet: number;
 }
 

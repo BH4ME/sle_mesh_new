@@ -53,11 +53,17 @@ typedef enum sle_adv_data {
 #define SLE_TEAM_ADV_FW_COMPAT_ANY 0U
 
 errcode_t sle_dev_register_cbks(void);
+
+/* Metadata that is copied into the advertise/scan-response payload. */
 void sle_uart_server_adv_set_local_addr(const uint8_t addr[SLE_ADDR_LEN]);
 void sle_uart_server_adv_set_route_id(uint8_t route_id);
 void sle_uart_server_adv_set_fw_compat(uint16_t fw_compat);
+
+/* Advertiser lifecycle used by the server role. */
 errcode_t sle_uart_server_adv_init(void);
 errcode_t sle_uart_server_adv_restart(void);
+
+/* Shared SDK announce/seek callback table merge for server and client roles. */
 errcode_t sle_uart_announce_seek_merge_cbks(const sle_announce_seek_callbacks_t *cbks);
 
 errcode_t sle_uart_announce_register_cbks(void);

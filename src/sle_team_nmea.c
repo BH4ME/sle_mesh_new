@@ -294,7 +294,7 @@ int sle_team_nmea_feed(sle_team_nmea_state_t *state, char ch, char *line_buf, si
         int ret;
 
         if (*line_len == 0U) {
-            return SLE_TEAM_OK;
+            return SLE_TEAM_ERR_FORMAT;
         }
         line_buf[*line_len] = '\0';
         ret = sle_team_nmea_parse_line(state, line_buf, out);
@@ -309,5 +309,5 @@ int sle_team_nmea_feed(sle_team_nmea_state_t *state, char ch, char *line_buf, si
     }
     line_buf[*line_len] = ch;
     (*line_len)++;
-    return SLE_TEAM_OK;
+    return SLE_TEAM_ERR_FORMAT;
 }

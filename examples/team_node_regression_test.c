@@ -2498,8 +2498,14 @@ static void test_nmea_rmc_gga_updates_position(void)
 {
     sle_team_nmea_state_t nmea;
     sle_team_pos_body_t pos;
+    char line_buf[96];
+    size_t line_len = 0U;
 
     sle_team_nmea_init(&nmea);
+    (void)memset(line_buf, 0, sizeof(line_buf));
+    assert(sle_team_nmea_feed(&nmea, '\n', line_buf, sizeof(line_buf), &line_len, &pos) == SLE_TEAM_ERR_FORMAT);
+    assert(sle_team_nmea_feed(&nmea, '$', line_buf, sizeof(line_buf), &line_len, &pos) == SLE_TEAM_ERR_FORMAT);
+    assert(line_len == 1U);
     assert(sle_team_nmea_parse_line(&nmea,
         "$GPRMC,123519,A,4807.038,N,01131.000,E,022.4,084.4,230394,003.1,W*6A", &pos) == SLE_TEAM_OK);
     assert(pos.fix_status == 1U);

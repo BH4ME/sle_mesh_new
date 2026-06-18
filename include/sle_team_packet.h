@@ -9,6 +9,16 @@
 extern "C" {
 #endif
 
+/*
+ * On-air packet format.
+ *
+ * A frame is encoded in two layers:
+ *   1. sle_team_mesh_packet_t: small mesh/routing envelope used by transport.
+ *   2. sle_team_app_packet_t: team application payload with team/src/dst/seq.
+ *
+ * Most group-network decisions are made from the app packet. The mesh wrapper
+ * exists so WS63 direct links and relay forwarding can carry the same payload.
+ */
 #define SLE_TEAM_MAX_PATH_SIZE 64U
 #define SLE_TEAM_MAX_PAYLOAD_SIZE 184U
 #define SLE_TEAM_MAX_PACKET_SIZE (1U + 4U + 1U + SLE_TEAM_MAX_PATH_SIZE + SLE_TEAM_MAX_PAYLOAD_SIZE)
@@ -16,6 +26,7 @@ extern "C" {
 #define SLE_TEAM_LEADER_TERM_DEFAULT 1U
 #define SLE_TEAM_FW_COMPAT_ANY 0U
 
+/* Transport routing hint. DIRECT is logical; TRANSPORT_DIRECT is physical. */
 typedef enum {
     SLE_TEAM_ROUTE_TRANSPORT_FLOOD = 0x00,
     SLE_TEAM_ROUTE_FLOOD = 0x01,
@@ -23,6 +34,7 @@ typedef enum {
     SLE_TEAM_ROUTE_TRANSPORT_DIRECT = 0x03,
 } sle_team_route_type_t;
 
+/* Mesh-envelope payload type values kept compatible with the original format. */
 typedef enum {
     SLE_TEAM_PKT_REQ = 0x00,
     SLE_TEAM_PKT_RESPONSE = 0x01,
@@ -43,6 +55,7 @@ typedef enum {
     SLE_TEAM_PAYLOAD_V1 = 0x00,
 } sle_team_payload_version_t;
 
+/* Application messages understood by the team-node state machine. */
 typedef enum {
     SLE_TEAM_APP_HELLO = 0x01,
     SLE_TEAM_APP_HEARTBEAT = 0x02,
@@ -53,6 +66,7 @@ typedef enum {
     SLE_TEAM_APP_ROUTE_UPDATE = 0x07,
 } sle_team_app_msg_type_t;
 
+/* Alert reasons reported by members or generated when the leader marks loss. */
 typedef enum {
     SLE_TEAM_ALERT_NONE = 0,
     SLE_TEAM_ALERT_DISTANCE = 1,
@@ -69,6 +83,7 @@ typedef enum {
     SLE_TEAM_ERR_UNSUPPORTED = -4,
 } sle_team_status_t;
 
+/* Outer mesh envelope. app_payload lives inside payload[] for GROUP_DATA. */
 typedef struct {
     uint8_t version;
     uint8_t payload_type;
@@ -83,6 +98,12 @@ typedef struct {
     uint8_t payload[SLE_TEAM_MAX_PAYLOAD_SIZE];
 } sle_team_mesh_packet_t;
 
+/*
+ * Inner team application packet.
+ *
+ * leader_term is a stale-policy fence. It is not automatic leader election;
+ * members use it to reject CONFIG/ROUTE_UPDATE packets from an older authority.
+ */
 typedef struct {
     uint8_t app_msg_type;
     uint8_t flags;
@@ -96,6 +117,7 @@ typedef struct {
     const uint8_t *body;
 } sle_team_app_packet_t;
 
+/* HELLO starts/restarts join. fw_compat enforces same proof-line firmware. */
 typedef struct {
     uint8_t device_id;
     uint8_t role;
@@ -106,6 +128,7 @@ typedef struct {
     uint8_t fw_compat_hi;
 } sle_team_hello_body_t;
 
+/* Periodic liveness plus compact telemetry used by leader records. */
 typedef struct {
     uint8_t battery_percent;
     int8_t rssi_dbm;
@@ -113,6 +136,7 @@ typedef struct {
     uint8_t reserved;
 } sle_team_heartbeat_body_t;
 
+/* Position uses integer E6 degrees to avoid floating point on firmware. */
 typedef struct {
     int32_t latitude_e6;
     int32_t longitude_e6;
@@ -124,6 +148,7 @@ typedef struct {
     uint8_t reserved;
 } sle_team_pos_body_t;
 
+/* Alert can carry the last known coordinates for a lost/leaving member. */
 typedef struct {
     uint8_t lost_member_id;
     uint8_t reason;
@@ -133,6 +158,7 @@ typedef struct {
     uint32_t last_report_s;
 } sle_team_alert_body_t;
 
+/* Leader-to-member operating policy. ROUTE_UPDATE carries the parent choice. */
 typedef struct {
     uint16_t report_interval_s;
     uint16_t warn_distance_m;
@@ -147,12 +173,19 @@ typedef struct {
 #define SLE_TEAM_CONFIG_FLAG_RELAY_DISCOVERY_ONLY 0x01U
 #define SLE_TEAM_ROUTE_UPDATE_FLAG_RELAY_GRANT 0x01U
 
+/* ACK confirms policy delivery and helps clear pending recovery state. */
 typedef struct {
     uint16_t ack_seq;
     uint8_t acked_msg_type;
     uint8_t status_code;
 } sle_team_ack_body_t;
 
+/*
+ * Parent assignment:
+ *   parent_id   = logical parent seen by the member;
+ *   next_hop_id = physical/logical next hop used by the sender;
+ *   parent_state= whether the member should wait or treat parent as connected.
+ */
 typedef struct {
     uint8_t parent_id;
     uint8_t next_hop_id;
@@ -171,6 +204,7 @@ int sle_team_encode_app_packet(const sle_team_app_packet_t *packet, uint8_t *out
     uint16_t *out_len);
 int sle_team_decode_app_packet(sle_team_app_packet_t *packet, const uint8_t *buf, size_t buf_len);
 
+/* Convenience builders for each app message type. */
 int sle_team_build_hello(uint8_t team_id, uint8_t src_id, uint8_t dst_id, uint16_t seq,
     const sle_team_hello_body_t *body, uint8_t *out_buf, size_t out_buf_len, uint16_t *out_len);
 int sle_team_build_heartbeat(uint8_t team_id, uint8_t src_id, uint8_t dst_id, uint16_t seq,
@@ -186,9 +220,11 @@ int sle_team_build_ack(uint8_t team_id, uint8_t src_id, uint8_t dst_id, uint16_t
 int sle_team_build_route_update(uint8_t team_id, uint8_t src_id, uint8_t dst_id, uint16_t seq,
     const sle_team_route_update_body_t *body, uint8_t *out_buf, size_t out_buf_len, uint16_t *out_len);
 
+/* Helpers used during SLE advertisement scan before opening a connection. */
 uint8_t sle_team_scan_route_id_from_data(const uint8_t *data, uint16_t len);
 uint16_t sle_team_scan_fw_compat_from_data(const uint8_t *data, uint16_t len);
 
+/* Wrap/unwrap the app packet into the compact mesh GROUP_DATA envelope. */
 int sle_team_wrap_mesh_group_data(const uint8_t channel_hash, const uint8_t cipher_mac[2],
     const uint8_t *app_payload, uint16_t app_payload_len, sle_team_route_type_t route_type,
     sle_team_mesh_packet_t *packet);

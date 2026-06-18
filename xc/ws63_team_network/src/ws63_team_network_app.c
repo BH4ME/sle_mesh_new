@@ -30,6 +30,7 @@
 #include "sle_uart_server_adv.h"
 #include "ws63_team_gps.h"
 #include "ws63_team_http.h"
+#include "ws63_team_power.h"
 #include "ws63_st7789_display.h"
 #include "ws63_team_status_led.h"
 #ifndef CONFIG_SLE_TEAM_SELF_ID
@@ -101,8 +102,8 @@
 #ifndef CONFIG_SLE_TEAM_ST7789_HEIGHT
 #define CONFIG_SLE_TEAM_ST7789_HEIGHT 135
 #endif
-#define SLE_TEAM_FW_VERSION "v4.5.46-minimal"
-#define SLE_TEAM_FW_COMPAT 0x0546U
+#define SLE_TEAM_FW_VERSION "v4.5.56-minimal"
+#define SLE_TEAM_FW_COMPAT 0x0556U
 #define SLE_TEAM_HW_CONSTRAINTS "minimal leader/member/relay rewrite"
 #define SLE_TEAM_APP_TASK_STACK_SIZE 0x1800
 #define SLE_TEAM_APP_TASK_PRIO 28
@@ -138,6 +139,10 @@ typedef struct {
     sle_addr_t addr;
     uint8_t route_id;
 } team_pending_conn_t;
+
+/* Display state is double-buffered with a sequence counter because the
+ * networking task writes status, while TeamDisplayTask reads and paints it.
+ * This keeps LVGL/ST7789 work out of the time-sensitive SLE receive path. */
 typedef struct {
     volatile uint32_t seq;
     uint8_t online_count;
@@ -169,10 +174,12 @@ typedef struct {
 typedef struct {
     uint8_t uart_rx_buf[SLE_TEAM_UART_RX_BUF_SIZE];
     char line_buf[SLE_TEAM_CLI_LINE_SIZE];
-    char self_label[8];
-    char leader_label[8];
+    char self_label[16];
+    char leader_label[16];
+    char softap_ssid[32];
     uint8_t self_mac[6];
     uint8_t self_mac_ready;
+    uint16_t leader_suffix;
     uint16_t line_len;
     unsigned long cli_queue_id;
     uint8_t cli_queue_ready;
@@ -180,6 +187,16 @@ typedef struct {
     uint8_t role_configured;
     uint8_t sle_started;
     uint8_t relay_client_started;
+    volatile uint8_t role_request_pending;
+    uint8_t role_request_role;
+    uint8_t role_request_team;
+    uint8_t role_request_channel;
+    uint8_t role_request_leader;
+    uint16_t role_request_leader_suffix;
+    uint16_t role_request_leader_term;
+    uint8_t role_request_direct_cap;
+    uint8_t role_request_save_nv;
+    int role_request_last_ret;
     uint8_t relay_scan_paused_for_upstream_loss;
     uint8_t direct_cap;
     uint8_t relay_target;
@@ -203,9 +220,49 @@ static uart_buffer_config_t g_uart_buffer_config = {
 static uint16_t team_self_mac_suffix(void);
 static uint8_t team_route_id_from_suffix(uint16_t suffix);
 static uint32_t team_now_s(void *user_ctx);
+static uint8_t team_direct_cap(void);
+static uint8_t team_relay_count(void);
 static uint8_t team_online_count(void);
 static int team_configure_role(sle_team_node_role_t role, uint8_t team_id, uint8_t leader_id,
     uint8_t channel_hash, uint16_t leader_term);
+static int team_request_role_config(sle_team_node_role_t role, uint8_t team_id, uint8_t leader_id,
+    uint8_t channel_hash, uint16_t leader_suffix, uint16_t leader_term, uint8_t direct_cap, uint8_t save_nv);
+static void team_handle_role_request_once(void);
+static void team_identity_refresh_labels(void);
+static void team_identity_set_leader_suffix(uint16_t suffix);
+static void team_identity_set_fallback(void);
+static int team_cfg_apply_loaded(const sle_team_config_nv_t *cfg);
+static int team_cfg_restore_loaded(const sle_team_config_nv_t *cfg);
+static int team_cfg_status_write_json(char *out, size_t out_size);
+static int team_cfg_save_leader(uint8_t team_id, uint8_t channel_hash, uint16_t leader_term, uint8_t apply_now);
+static int team_cfg_save_member(uint16_t leader_suffix, uint8_t team_id, uint8_t channel_hash,
+    uint16_t leader_term, uint8_t apply_now);
+static int team_cfg_apply_saved(void);
+static int team_cfg_clear_all_saved(void);
+static int team_factory_reset(void);
+static void team_member_reset_after_leave(void);
+static void team_reboot_schedule(const char *reason);
+static void team_http_get_identity_cb(ws63_team_http_identity_t *identity);
+static int team_http_pairing_start_cb(void);
+static int team_http_pairing_stop_cb(void);
+static int team_http_pairing_approve_cb(uint8_t member_id, uint8_t relay_allowed);
+static int team_http_member_select_cb(uint16_t leader_suffix, uint8_t team_id, uint8_t channel_hash);
+static int team_http_member_leave_cb(void);
+static const ws63_team_http_callbacks_t g_team_http_callbacks = {
+    .get_identity = team_http_get_identity_cb,
+    .write_config_status_json = team_cfg_status_write_json,
+    .save_leader = team_cfg_save_leader,
+    .save_member = team_cfg_save_member,
+    .apply_saved = team_cfg_apply_saved,
+    .clear_config = team_cfg_clear_all_saved,
+    .reboot = team_reboot_schedule,
+    .pairing_start = team_http_pairing_start_cb,
+    .pairing_stop = team_http_pairing_stop_cb,
+    .pairing_approve = team_http_pairing_approve_cb,
+    .member_select = team_http_member_select_cb,
+    .member_leave = team_http_member_leave_cb,
+    .factory_reset = team_factory_reset,
+};
 static void team_print(const char *text)
 {
     if (text != NULL) {
@@ -327,6 +384,154 @@ static int team_nv_allowed_clear(void)
     }
     osal_printk("[team-nv] clear allowed ret=0x%x flush=0x%x\r\n", ret, flush_ret);
     return ret == ERRCODE_SUCC ? SLE_TEAM_OK : SLE_TEAM_ERR_UNSUPPORTED;
+}
+static int team_cfg_status_write_json(char *out, size_t out_size)
+{
+    sle_team_config_nv_t cfg;
+    uint8_t nv_valid;
+    uint8_t runtime_valid = g_team_rt.role_configured != 0U ? 1U : 0U;
+    uint8_t runtime_role = runtime_valid != 0U ? (uint8_t)g_team_node.cfg.role : 0xFFU;
+    uint8_t runtime_self = runtime_valid != 0U ? g_team_node.cfg.self_id : g_team_rt.route_id;
+    int len;
+
+    if (out == NULL || out_size == 0U) {
+        return SLE_TEAM_ERR_ARG;
+    }
+    nv_valid = team_nv_config_load(&cfg) == SLE_TEAM_OK ? 1U : 0U;
+    if (nv_valid == 0U) {
+        (void)memset_s(&cfg, sizeof(cfg), 0, sizeof(cfg));
+        cfg.role = 0xFFU;
+    }
+    len = snprintf(out, out_size,
+        "{\"ok\":true,\"fw\":\"%s\",\"profile\":\"minimal\",\"selfSuffix\":\"%04X\",\"routeId\":%u,"
+        "\"softapSsid\":\"%s\",\"nvValid\":%s,\"nvRole\":\"%s\",\"nvRoleValue\":%u,\"nvTeam\":%u,"
+        "\"nvChannel\":%u,\"nvLeaderSuffix\":\"%04X\",\"nvLeaderTerm\":%u,\"runtimeConfigured\":%s,"
+        "\"runtimeRole\":\"%s\",\"runtimeRoleValue\":%u,\"runtimeTeam\":%u,\"runtimeChannel\":%u,"
+        "\"runtimeLeader\":%u,\"runtimeLeaderTerm\":%u,\"runtimeSelf\":%u,\"runtimeDirectCap\":%u,"
+        "\"runtimeRelayTarget\":%u,\"runtimeRelayCount\":%u,\"runtimeOnlineCount\":%u,"
+        "\"runtimeJoined\":%u,\"runtimeParent\":%u,\"runtimeRelayEnabled\":%u,"
+        "\"roleRequestPending\":%s,\"roleRequestRole\":\"%s\",\"roleRequestRoleValue\":%u,"
+        "\"roleRequestTeam\":%u,\"roleRequestChannel\":%u,\"roleRequestLeader\":%u,"
+        "\"roleRequestLeaderSuffix\":\"%04X\",\"roleRequestLeaderTerm\":%u,"
+        "\"roleRequestLastRet\":%d,\"lastRoleRet\":%d}",
+        SLE_TEAM_FW_VERSION,
+        team_self_mac_suffix(),
+        g_team_rt.route_id,
+        g_team_rt.softap_ssid[0] != '\0' ? g_team_rt.softap_ssid : "SLE",
+        nv_valid != 0U ? "true" : "false",
+        team_role_name(cfg.role, nv_valid),
+        nv_valid != 0U ? cfg.role : 255U,
+        nv_valid != 0U ? cfg.team_id : 0U,
+        nv_valid != 0U ? cfg.channel_hash : 0U,
+        nv_valid != 0U ? cfg.leader_suffix : 0U,
+        nv_valid != 0U ? cfg.leader_term : 0U,
+        runtime_valid != 0U ? "true" : "false",
+        team_role_name(runtime_role, runtime_valid),
+        runtime_role,
+        runtime_valid != 0U ? g_team_node.cfg.team_id : 0U,
+        runtime_valid != 0U ? g_team_node.cfg.channel_hash : 0U,
+        runtime_valid != 0U ? g_team_node.cfg.leader_id : 0U,
+        runtime_valid != 0U ? g_team_node.cfg.leader_term : 0U,
+        runtime_self,
+        runtime_valid != 0U && runtime_role == (uint8_t)SLE_TEAM_ROLE_LEADER ? team_direct_cap() : 0U,
+        runtime_valid != 0U && runtime_role == (uint8_t)SLE_TEAM_ROLE_LEADER ? g_team_rt.relay_target : 0U,
+        team_relay_count(),
+        team_online_count(),
+        runtime_valid != 0U ? g_team_node.joined : 0U,
+        runtime_valid != 0U ? g_team_node.upstream_parent_id : 0U,
+        runtime_valid != 0U ? g_team_node.cfg.relay_enabled : 0U,
+        g_team_rt.role_request_pending != 0U ? "true" : "false",
+        team_role_name(g_team_rt.role_request_role, g_team_rt.role_request_pending),
+        g_team_rt.role_request_pending != 0U ? g_team_rt.role_request_role : 255U,
+        g_team_rt.role_request_pending != 0U ? g_team_rt.role_request_team : 0U,
+        g_team_rt.role_request_pending != 0U ? g_team_rt.role_request_channel : 0U,
+        g_team_rt.role_request_pending != 0U ? g_team_rt.role_request_leader : 0U,
+        g_team_rt.role_request_pending != 0U ? g_team_rt.role_request_leader_suffix : 0U,
+        g_team_rt.role_request_pending != 0U ? g_team_rt.role_request_leader_term : 0U,
+        g_team_rt.role_request_last_ret,
+        g_team_rt.last_role_ret);
+    return (len > 0 && len < (int)out_size) ? SLE_TEAM_OK : SLE_TEAM_ERR_BUF;
+}
+static int team_cfg_clear_all_saved(void)
+{
+    int ret_cfg = team_nv_config_clear();
+    int ret_allow = team_nv_allowed_clear();
+
+    g_team_rt.role_request_pending = 0U;
+    g_team_rt.role_request_role = 0U;
+    g_team_rt.role_request_team = 0U;
+    g_team_rt.role_request_channel = 0U;
+    g_team_rt.role_request_leader = 0U;
+    g_team_rt.role_request_leader_suffix = 0U;
+    g_team_rt.role_request_leader_term = 0U;
+    g_team_rt.role_request_direct_cap = 0U;
+    g_team_rt.role_request_save_nv = 0U;
+    g_team_rt.role_request_last_ret = SLE_TEAM_OK;
+    if (g_team_rt.role_configured != 0U && g_team_node.cfg.role == SLE_TEAM_ROLE_LEADER) {
+        (void)sle_team_node_allow_all_members(&g_team_node);
+    }
+    if (g_team_rt.role_configured != 0U && g_team_node.cfg.role == SLE_TEAM_ROLE_MEMBER) {
+        g_team_rt.leader_suffix = 0U;
+        team_identity_refresh_labels();
+    }
+    return (ret_cfg == SLE_TEAM_OK && ret_allow == SLE_TEAM_OK) ? SLE_TEAM_OK : SLE_TEAM_ERR_UNSUPPORTED;
+}
+static int team_cfg_apply_saved(void)
+{
+    sle_team_config_nv_t cfg;
+
+    if (team_nv_config_load(&cfg) != SLE_TEAM_OK) {
+        return SLE_TEAM_ERR_FORMAT;
+    }
+    return team_cfg_apply_loaded(&cfg);
+}
+static int team_factory_reset(void)
+{
+    int ret = team_cfg_clear_all_saved();
+
+    if (ret == SLE_TEAM_OK) {
+        team_identity_set_fallback();
+        g_team_rt.role_configured = 0U;
+        g_team_rt.sle_started = 0U;
+        g_team_rt.relay_client_started = 0U;
+        g_team_rt.last_role_ret = SLE_TEAM_OK;
+        g_team_rt.role_request_pending = 0U;
+        g_team_rt.role_request_role = 0U;
+        g_team_rt.role_request_team = 0U;
+        g_team_rt.role_request_channel = 0U;
+        g_team_rt.role_request_leader = 0U;
+        g_team_rt.role_request_leader_suffix = 0U;
+        g_team_rt.role_request_leader_term = 0U;
+        g_team_rt.role_request_direct_cap = 0U;
+        g_team_rt.role_request_save_nv = 0U;
+        g_team_rt.role_request_last_ret = SLE_TEAM_OK;
+        (void)memset_s(&g_team_node, sizeof(g_team_node), 0, sizeof(g_team_node));
+        (void)memset_s(&g_team_cli, sizeof(g_team_cli), 0, sizeof(g_team_cli));
+        (void)memset_s(&g_team_conn_cbks, sizeof(g_team_conn_cbks), 0, sizeof(g_team_conn_cbks));
+    }
+    return ret;
+}
+static void team_member_reset_after_leave(void)
+{
+    team_identity_set_fallback();
+    g_team_rt.role_configured = 0U;
+    g_team_rt.sle_started = 0U;
+    g_team_rt.relay_client_started = 0U;
+    g_team_rt.last_role_ret = SLE_TEAM_OK;
+    g_team_rt.role_request_pending = 0U;
+    g_team_rt.role_request_role = 0U;
+    g_team_rt.role_request_team = 0U;
+    g_team_rt.role_request_channel = 0U;
+    g_team_rt.role_request_leader = 0U;
+    g_team_rt.role_request_leader_suffix = 0U;
+    g_team_rt.role_request_leader_term = 0U;
+    g_team_rt.role_request_direct_cap = 0U;
+    g_team_rt.role_request_save_nv = 0U;
+    g_team_rt.role_request_last_ret = SLE_TEAM_OK;
+    g_team_rt.leader_suffix = 0U;
+    (void)memset_s(&g_team_node, sizeof(g_team_node), 0, sizeof(g_team_node));
+    (void)memset_s(&g_team_cli, sizeof(g_team_cli), 0, sizeof(g_team_cli));
+    osal_printk("[team] member reset after leave\r\n");
 }
 static uint8_t team_min_u8(uint8_t left, uint8_t right) { return left < right ? left : right; }
 static void team_display_label_for_member(uint8_t member_id, char *out, size_t out_len)
@@ -690,6 +895,13 @@ static uint16_t team_self_mac_suffix(void)
     }
     return (uint16_t)(((uint16_t)g_team_rt.self_mac[4] << 8U) | g_team_rt.self_mac[5]);
 }
+static uint16_t team_active_leader_suffix(void)
+{
+    if (g_team_rt.role_configured != 0U && g_team_node.cfg.role == SLE_TEAM_ROLE_LEADER) {
+        return team_self_mac_suffix();
+    }
+    return g_team_rt.leader_suffix;
+}
 static uint8_t team_route_id_from_mac(const uint8_t mac[6])
 {
     uint16_t suffix;
@@ -745,29 +957,49 @@ static uint8_t team_leader_resolve_disconnected_member(uint16_t conn_id, const s
 }
 static void team_identity_refresh_labels(void)
 {
-    char self_prefix = 'U';
+    uint16_t leader_suffix;
 
-    if (g_team_rt.role_configured != 0U) {
-        self_prefix = g_team_node.cfg.role == SLE_TEAM_ROLE_LEADER ? 'L' : 'M';
+    if (g_team_rt.self_mac_ready != 0U) {
+        (void)snprintf(g_team_rt.self_label, sizeof(g_team_rt.self_label), "SLE-%02X%02X",
+            g_team_rt.self_mac[4], g_team_rt.self_mac[5]);
+    } else {
+        (void)snprintf(g_team_rt.self_label, sizeof(g_team_rt.self_label), "SLE-%02X",
+            g_team_rt.route_id);
     }
     if (g_team_rt.self_mac_ready != 0U) {
-        (void)snprintf(g_team_rt.self_label, sizeof(g_team_rt.self_label), "%c%02X%02X",
-            self_prefix, g_team_rt.self_mac[4], g_team_rt.self_mac[5]);
+        (void)snprintf(g_team_rt.softap_ssid, sizeof(g_team_rt.softap_ssid), "SLE-%02X%02X",
+            g_team_rt.self_mac[4], g_team_rt.self_mac[5]);
     } else {
-        (void)snprintf(g_team_rt.self_label, sizeof(g_team_rt.self_label), "%c%02X",
-            self_prefix, g_team_rt.route_id);
+        (void)snprintf(g_team_rt.softap_ssid, sizeof(g_team_rt.softap_ssid), "SLE-%02X",
+            g_team_rt.route_id);
     }
     if (g_team_rt.role_configured != 0U && g_team_node.cfg.role == SLE_TEAM_ROLE_LEADER) {
         (void)snprintf(g_team_rt.leader_label, sizeof(g_team_rt.leader_label), "%s", g_team_rt.self_label);
+        g_team_rt.leader_suffix = team_self_mac_suffix();
     } else {
-        (void)snprintf(g_team_rt.leader_label, sizeof(g_team_rt.leader_label), "L%02X",
-            g_team_node.cfg.leader_id != 0U ? g_team_node.cfg.leader_id : CONFIG_SLE_TEAM_LEADER_ID);
+        leader_suffix = team_active_leader_suffix();
+        if (leader_suffix != 0U) {
+            (void)snprintf(g_team_rt.leader_label, sizeof(g_team_rt.leader_label), "L%04X", leader_suffix);
+        } else {
+            (void)snprintf(g_team_rt.leader_label, sizeof(g_team_rt.leader_label), "L%02X",
+                g_team_node.cfg.leader_id != 0U ? g_team_node.cfg.leader_id : CONFIG_SLE_TEAM_LEADER_ID);
+        }
+    }
+}
+static void team_identity_set_leader_suffix(uint16_t suffix)
+{
+    g_team_rt.leader_suffix = suffix;
+    if (suffix != 0U) {
+        (void)snprintf(g_team_rt.leader_label, sizeof(g_team_rt.leader_label), "L%04X", suffix);
+    } else {
+        team_identity_refresh_labels();
     }
 }
 static void team_identity_set_fallback(void)
 {
     g_team_rt.route_id = (uint8_t)CONFIG_SLE_TEAM_SELF_ID;
     g_team_rt.self_mac_ready = 0U;
+    g_team_rt.leader_suffix = 0U;
     (void)memset_s(g_team_rt.self_mac, sizeof(g_team_rt.self_mac), 0, sizeof(g_team_rt.self_mac));
     team_identity_refresh_labels();
 }
@@ -810,6 +1042,63 @@ static void team_identity_init(void)
     team_identity_set_fallback();
     team_identity_read_mac();
 }
+static void team_http_get_identity_cb(ws63_team_http_identity_t *identity)
+{
+    if (identity == NULL) {
+        return;
+    }
+    (void)memset_s(identity, sizeof(*identity), 0, sizeof(*identity));
+    (void)snprintf(identity->self_label, sizeof(identity->self_label), "%s", g_team_rt.self_label);
+    (void)snprintf(identity->leader_label, sizeof(identity->leader_label), "%s", g_team_rt.leader_label);
+    (void)snprintf(identity->softap_ssid, sizeof(identity->softap_ssid), "%s", g_team_rt.softap_ssid);
+    if (g_team_rt.self_mac_ready != 0U) {
+        (void)memcpy_s(identity->self_mac, sizeof(identity->self_mac),
+            g_team_rt.self_mac, sizeof(g_team_rt.self_mac));
+    }
+    identity->self_mac_ready = g_team_rt.self_mac_ready;
+    identity->route_id = g_team_rt.route_id;
+    identity->self_suffix = team_self_mac_suffix();
+    identity->role_configured = g_team_rt.role_configured;
+    identity->role_request_pending = g_team_rt.role_request_pending;
+    identity->role_request_role = g_team_rt.role_request_role;
+    identity->role_request_team = g_team_rt.role_request_team;
+    identity->role_request_channel = g_team_rt.role_request_channel;
+    identity->role_request_leader = g_team_rt.role_request_leader;
+    identity->role_request_leader_suffix = g_team_rt.role_request_leader_suffix;
+    identity->role_request_leader_term = g_team_rt.role_request_leader_term;
+    identity->role_request_last_ret = g_team_rt.role_request_last_ret;
+    identity->fw_version = SLE_TEAM_FW_VERSION;
+}
+static int team_http_pairing_start_cb(void)
+{
+    return sle_team_node_pairing_start(&g_team_node);
+}
+static int team_http_pairing_stop_cb(void)
+{
+    return sle_team_node_pairing_stop(&g_team_node);
+}
+static int team_http_pairing_approve_cb(uint8_t member_id, uint8_t relay_allowed)
+{
+    return sle_team_node_pairing_approve_with_relay(&g_team_node, member_id, relay_allowed);
+}
+static int team_http_member_select_cb(uint16_t leader_suffix, uint8_t team_id, uint8_t channel_hash)
+{
+    return team_cfg_save_member(leader_suffix, team_id, channel_hash, SLE_TEAM_LEADER_TERM_DEFAULT, 1U);
+}
+static int team_http_member_leave_cb(void)
+{
+    int ret;
+
+    if (g_team_rt.role_configured == 0U || g_team_node.cfg.role != SLE_TEAM_ROLE_MEMBER) {
+        return SLE_TEAM_ERR_ARG;
+    }
+    ret = sle_team_node_member_leave(&g_team_node);
+    if (ret == SLE_TEAM_OK) {
+        (void)team_nv_config_clear();
+        team_member_reset_after_leave();
+    }
+    return ret;
+}
 static void team_sle_prepare_local_addr(void)
 {
     uint8_t sle_addr[6] = {0x02, 0x53, 0x4C, 0x45, 0x00, 0x01};
@@ -842,7 +1131,7 @@ static int8_t team_rssi_dbm(void *user_ctx)
 static uint8_t team_battery_percent(void *user_ctx)
 {
     unused(user_ctx);
-    return 100U;
+    return ws63_team_power_battery_percent();
 }
 static void team_node_log(void *user_ctx, const char *text)
 {
@@ -851,6 +1140,8 @@ static void team_node_log(void *user_ctx, const char *text)
 }
 static void team_status_led_update(void)
 {
+    /* Only one visual state is selected at a time. Order matters: leader and
+     * joining/lost states should not be blended with member/relay colors. */
     if (g_team_rt.role_configured == 0U) { ws63_team_status_led_idle(); return; }
     if (g_team_node.cfg.role == SLE_TEAM_ROLE_LEADER) { ws63_team_status_led_leader(); return; }
     if (g_team_node.joined == 0U) { ws63_team_status_led_joining(); return; }
@@ -863,6 +1154,8 @@ static void team_on_joined(void *user_ctx, uint8_t member_id)
     int ret;
 
     unused(user_ctx);
+    /* The core accepts the join; the WS63 shell decides whether the newly
+     * direct member should immediately become a relay to satisfy relay_target. */
     if (g_team_node.cfg.role == SLE_TEAM_ROLE_LEADER && g_team_rt.relay_target != 0U &&
         team_relay_count() < g_team_rt.relay_target) {
         ret = sle_team_node_grant_relay(&g_team_node, member_id);
@@ -901,7 +1194,9 @@ static void team_on_position(void *user_ctx, uint8_t member_id, const sle_team_p
     if (pos != NULL) {
         osal_printk("[team] pos member=%u lat=%ld lon=%ld fix=%u\r\n",
             member_id, (long)pos->latitude_e6, (long)pos->longitude_e6, pos->fix_status);
-        team_display_publish_event(WS63_ST7789_EVENT_REJOIN, member_id, pos);
+        /* Position packets are steady telemetry, not link events. Publishing
+         * them as REJOIN made the display flash a bright green event card for
+         * every GPS/location update after enrollment. */
     }
 }
 static void team_on_alert(void *user_ctx, uint8_t member_id, uint8_t reason)
@@ -921,6 +1216,9 @@ static void team_on_relay_offline(void *user_ctx, uint8_t member_id)
     osal_printk("[team] relay offline member=%u\r\n", member_id);
     team_display_publish_event(WS63_ST7789_EVENT_LOST, member_id, NULL);
     ws63_team_status_led_lost();
+    /* Relay loss is handled by the portable core, but the radio scanner lives
+     * in this WS63 layer. Kick scanning here so a replacement relay can be
+     * found without waiting for the next slow rescan window. */
     if (g_team_rt.role_configured != 0U && g_team_node.cfg.role == SLE_TEAM_ROLE_LEADER) {
         sle_uart_client_resume_scan("relay-offline-recovery");
         g_team_rt.leader_scan_paused = 0U;
@@ -975,6 +1273,8 @@ static void team_pending_note(const sle_addr_t *addr, uint8_t route_id)
     uint8_t i;
     team_pending_conn_t *free_slot = NULL;
 
+    /* Advertisement data is seen before the SLE connection callback provides a
+     * conn_id. Keep the route id by address so pair-complete can bind it later. */
     if (addr == NULL || route_id == 0U || route_id == SLE_TEAM_BROADCAST_ID) {
         return;
     }
@@ -1047,6 +1347,9 @@ static void team_bind_packet_source(uint16_t conn_id, uint8_t from_client, const
     if (app == NULL || app->src_id == 0U || app->src_id == SLE_TEAM_BROADCAST_ID) {
         return;
     }
+    /* from_client means the local SLE client received data from a peer it
+     * dialed. Leaders use that side for direct members and relays use it for
+     * children, so binding must be careful around forwarded child packets. */
     if (from_client != 0U) {
         if (g_team_rt.role_configured != 0U &&
             g_team_node.cfg.role == SLE_TEAM_ROLE_LEADER &&
@@ -1122,6 +1425,9 @@ static uint8_t team_leader_drop_stale_direct_conn(uint16_t conn_id, uint8_t from
     if (sle_uart_client_get_conn_member(conn_id, &bound_id) == 0U || bound_id != app->src_id) {
         return 0U;
     }
+    /* Once a member has been moved under a relay, its old direct physical link
+     * can still deliver a few packets. Dropping that stale direct link prevents
+     * the leader from treating the old path as the current topology. */
     if (member->policy_pending != 0U) {
         if (g_team_node.relay_recovery_pending != 0U &&
             app->src_id != g_team_node.relay_recovery_lost_relay_id) {
@@ -1152,6 +1458,8 @@ static uint8_t team_leader_target_conn_for_member(uint8_t dst_id, uint16_t *conn
         return 0U;
     }
     member = sle_team_node_find_member(&g_team_node, dst_id);
+    /* Logical destination may be a child behind a relay. Convert the logical
+     * member id to the physical next hop before using the WS63 client table. */
     if (member != NULL) {
         if (member->policy_pending != 0U &&
             (g_team_node.relay_recovery_pending == 0U ||
@@ -1184,6 +1492,9 @@ static int team_sle_send(void *user_ctx, sle_team_send_kind_t kind, uint8_t dst_
     if (buf == NULL || len == 0U || g_team_rt.role_configured == 0U) {
         return SLE_TEAM_ERR_ARG;
     }
+    /* This is the hardware adapter for the portable node core:
+     * leader -> SLE client links, member upstream -> SLE server link,
+     * relay downstream -> SLE client links. */
     if (g_team_node.cfg.role == SLE_TEAM_ROLE_LEADER) {
         if (dst_id == SLE_TEAM_BROADCAST_ID) {
             ret = sle_uart_client_send_all(buf, len);
@@ -1231,6 +1542,8 @@ static int team_handle_received_packet(uint16_t conn_id, uint8_t from_client, co
     }
     decoded = team_decode_app_packet_from_buf(buf, len, &app_packet);
     if (decoded != 0U) {
+        /* Decode once in the WS63 shell so physical connection bookkeeping can
+         * happen before the protocol core updates logical topology. */
         team_bind_packet_source(conn_id, from_client, &app_packet);
         if (team_leader_drop_stale_direct_conn(conn_id, from_client, &app_packet) != 0U) {
             return SLE_TEAM_OK;
@@ -1247,6 +1560,8 @@ static int team_handle_received_packet(uint16_t conn_id, uint8_t from_client, co
             app_packet.app_msg_type == SLE_TEAM_APP_HELLO &&
             (ret == SLE_TEAM_ERR_UNSUPPORTED ||
             (ret == SLE_TEAM_ERR_FORMAT && app_packet.body_len < sizeof(sle_team_hello_body_t)))) {
+            /* A bad forwarded child HELLO must not drop the relay's physical
+             * connection; only direct rejected HELLOs are disconnected here. */
             if (ingress_relay_id != 0U) {
                 osal_printk("[team] keep relay conn=%u member=%u rejected forwarded hello src=%u\r\n",
                     conn_id, ingress_relay_id, app_packet.src_id);
@@ -1628,7 +1943,7 @@ static void team_cfg_status_json(void)
     uint8_t runtime_valid = g_team_rt.role_configured != 0U ? 1U : 0U;
     uint8_t runtime_role = runtime_valid != 0U ? (uint8_t)g_team_node.cfg.role : 0xFFU;
     uint8_t runtime_self = runtime_valid != 0U ? g_team_node.cfg.self_id : g_team_rt.route_id;
-    char json[768];
+    char json[1024];
 
     nv_valid = team_nv_config_load(&cfg) == SLE_TEAM_OK ? 1U : 0U;
     if (nv_valid == 0U) {
@@ -1642,7 +1957,11 @@ static void team_cfg_status_json(void)
         "\"runtimeRoleValue\":%u,\"runtimeTeam\":%u,\"runtimeChannel\":%u,\"runtimeLeader\":%u,"
         "\"runtimeLeaderTerm\":%u,\"runtimeSelf\":%u,\"runtimeDirectCap\":%u,\"runtimeRelayTarget\":%u,"
         "\"runtimeRelayCount\":%u,\"runtimeOnlineCount\":%u,\"runtimeJoined\":%u,"
-        "\"runtimeParent\":%u,\"runtimeRelayEnabled\":%u,\"lastRoleRet\":%d}",
+        "\"runtimeParent\":%u,\"runtimeRelayEnabled\":%u,"
+        "\"roleRequestPending\":%s,\"roleRequestRole\":\"%s\",\"roleRequestRoleValue\":%u,"
+        "\"roleRequestTeam\":%u,\"roleRequestChannel\":%u,\"roleRequestLeader\":%u,"
+        "\"roleRequestLeaderSuffix\":\"%04X\",\"roleRequestLeaderTerm\":%u,"
+        "\"roleRequestLastRet\":%d,\"lastRoleRet\":%d}",
         SLE_TEAM_FW_VERSION,
         team_self_mac_suffix(),
         g_team_rt.route_id,
@@ -1668,22 +1987,47 @@ static void team_cfg_status_json(void)
         runtime_valid != 0U ? g_team_node.joined : 0U,
         runtime_valid != 0U ? g_team_node.upstream_parent_id : 0U,
         runtime_valid != 0U ? g_team_node.cfg.relay_enabled : 0U,
+        g_team_rt.role_request_pending != 0U ? "true" : "false",
+        team_role_name(g_team_rt.role_request_role, g_team_rt.role_request_pending),
+        g_team_rt.role_request_pending != 0U ? g_team_rt.role_request_role : 255U,
+        g_team_rt.role_request_pending != 0U ? g_team_rt.role_request_team : 0U,
+        g_team_rt.role_request_pending != 0U ? g_team_rt.role_request_channel : 0U,
+        g_team_rt.role_request_pending != 0U ? g_team_rt.role_request_leader : 0U,
+        g_team_rt.role_request_pending != 0U ? g_team_rt.role_request_leader_suffix : 0U,
+        g_team_rt.role_request_pending != 0U ? g_team_rt.role_request_leader_term : 0U,
+        g_team_rt.role_request_last_ret,
         g_team_rt.last_role_ret);
     osal_printk("[cfg-json] %s\r\n", json);
 }
 static int team_cfg_done(void) { team_cfg_status_json(); return 1; }
 static int team_cfg_apply_loaded(const sle_team_config_nv_t *cfg)
 {
+    /* User/API initiated apply uses the queued path so Web can show starting
+     * before the role is fully brought up by the main loop. */
+    if (cfg == NULL || team_nv_config_valid(cfg) == 0U) { return SLE_TEAM_ERR_ARG; }
+    if (cfg->role == (uint8_t)SLE_TEAM_ROLE_LEADER) {
+        return team_request_role_config(SLE_TEAM_ROLE_LEADER, cfg->team_id, g_team_rt.route_id,
+            cfg->channel_hash, team_self_mac_suffix(), cfg->leader_term, cfg->direct_cap, 1U);
+    }
+    return team_request_role_config(SLE_TEAM_ROLE_MEMBER, cfg->team_id,
+        team_route_id_from_suffix(cfg->leader_suffix), cfg->channel_hash, cfg->leader_suffix,
+        cfg->leader_term, 0U, 1U);
+}
+static int team_cfg_restore_loaded(const sle_team_config_nv_t *cfg)
+{
     uint8_t leader_id;
 
+    /* Boot restore keeps the old direct path so saved config comes up immediately
+     * during startup before the CLI/Web surfaces are fully live. */
     if (cfg == NULL || team_nv_config_valid(cfg) == 0U) { return SLE_TEAM_ERR_ARG; }
     if (cfg->role == (uint8_t)SLE_TEAM_ROLE_LEADER) {
         g_team_rt.direct_cap = cfg->direct_cap;
+        team_identity_set_leader_suffix(team_self_mac_suffix());
         return team_configure_role(SLE_TEAM_ROLE_LEADER, cfg->team_id, g_team_rt.route_id,
             cfg->channel_hash, cfg->leader_term);
     }
     leader_id = team_route_id_from_suffix(cfg->leader_suffix);
-    (void)snprintf(g_team_rt.leader_label, sizeof(g_team_rt.leader_label), "L%04X", cfg->leader_suffix);
+    team_identity_set_leader_suffix(cfg->leader_suffix);
     return team_configure_role(SLE_TEAM_ROLE_MEMBER, cfg->team_id, leader_id,
         cfg->channel_hash, cfg->leader_term);
 }
@@ -1693,7 +2037,9 @@ static int team_cfg_save_leader(uint8_t team_id, uint8_t channel_hash, uint16_t 
         channel_hash, team_direct_cap(), leader_term);
 
     if (ret == SLE_TEAM_OK && apply_now != 0U) {
-        ret = team_configure_role(SLE_TEAM_ROLE_LEADER, team_id, g_team_rt.route_id, channel_hash, leader_term); }
+        ret = team_request_role_config(SLE_TEAM_ROLE_LEADER, team_id, g_team_rt.route_id,
+            channel_hash, team_self_mac_suffix(), leader_term, team_direct_cap(), 1U);
+    }
     return ret;
 }
 static int team_cfg_save_member(uint16_t leader_suffix, uint8_t team_id, uint8_t channel_hash,
@@ -1702,10 +2048,82 @@ static int team_cfg_save_member(uint16_t leader_suffix, uint8_t team_id, uint8_t
     int ret = team_nv_config_save(SLE_TEAM_ROLE_MEMBER, team_id, leader_suffix, channel_hash, 0U, leader_term);
 
     if (ret == SLE_TEAM_OK && apply_now != 0U) {
-        (void)snprintf(g_team_rt.leader_label, sizeof(g_team_rt.leader_label), "L%04X", leader_suffix);
-        ret = team_configure_role(SLE_TEAM_ROLE_MEMBER, team_id, team_route_id_from_suffix(leader_suffix),
-            channel_hash, leader_term); }
+        ret = team_request_role_config(SLE_TEAM_ROLE_MEMBER, team_id,
+            team_route_id_from_suffix(leader_suffix), channel_hash, leader_suffix, leader_term, 0U, 1U);
+    }
     return ret;
+}
+static int team_request_role_config(sle_team_node_role_t role, uint8_t team_id, uint8_t leader_id,
+    uint8_t channel_hash, uint16_t leader_suffix, uint16_t leader_term, uint8_t direct_cap, uint8_t save_nv)
+{
+    if (g_team_rt.role_configured != 0U || g_team_rt.role_request_pending != 0U) {
+        return SLE_TEAM_ERR_UNSUPPORTED;
+    }
+    g_team_rt.role_request_role = (uint8_t)role;
+    g_team_rt.role_request_leader = leader_id;
+    g_team_rt.role_request_team = team_id;
+    g_team_rt.role_request_channel = channel_hash;
+    g_team_rt.role_request_leader_suffix = leader_suffix;
+    g_team_rt.role_request_leader_term = leader_term != 0U ? leader_term : SLE_TEAM_LEADER_TERM_DEFAULT;
+    g_team_rt.role_request_direct_cap = direct_cap;
+    g_team_rt.role_request_save_nv = save_nv;
+    g_team_rt.role_request_last_ret = SLE_TEAM_OK;
+    g_team_rt.role_request_pending = 1U;
+    if (role == SLE_TEAM_ROLE_LEADER) {
+        team_identity_set_leader_suffix(team_self_mac_suffix());
+    } else {
+        team_identity_set_leader_suffix(leader_suffix);
+    }
+    team_identity_refresh_labels();
+    team_status_led_update();
+    team_display_publish_status();
+    osal_printk("[team] role request queued role=%u leader=%u team=%u channel=%u suffix=%04X term=%u direct_cap=%u save_nv=%u\r\n",
+        (uint8_t)role, leader_id, team_id, channel_hash, leader_suffix, g_team_rt.role_request_leader_term,
+        direct_cap, save_nv);
+    return SLE_TEAM_OK;
+}
+static void team_handle_role_request_once(void)
+{
+    sle_team_node_role_t role;
+    uint8_t team_id;
+    uint8_t leader_id;
+    uint8_t channel_hash;
+    uint16_t leader_suffix;
+    uint16_t leader_term;
+    uint8_t direct_cap;
+    uint8_t save_nv;
+    int ret;
+
+    if (g_team_rt.role_request_pending == 0U || g_team_rt.role_configured != 0U) {
+        return;
+    }
+    role = (sle_team_node_role_t)g_team_rt.role_request_role;
+    team_id = g_team_rt.role_request_team;
+    leader_id = g_team_rt.role_request_leader;
+    channel_hash = g_team_rt.role_request_channel;
+    leader_suffix = g_team_rt.role_request_leader_suffix;
+    leader_term = g_team_rt.role_request_leader_term;
+    direct_cap = g_team_rt.role_request_direct_cap;
+    save_nv = g_team_rt.role_request_save_nv;
+    if (role == SLE_TEAM_ROLE_LEADER) {
+        g_team_rt.direct_cap = direct_cap != 0U ? direct_cap : g_team_rt.direct_cap;
+        ret = team_configure_role(SLE_TEAM_ROLE_LEADER, team_id, leader_id, channel_hash, leader_term);
+    } else {
+        ret = team_configure_role(SLE_TEAM_ROLE_MEMBER, team_id, leader_id, channel_hash, leader_term);
+    }
+    g_team_rt.role_request_last_ret = ret;
+    g_team_rt.last_role_ret = ret;
+    g_team_rt.role_request_pending = 0U;
+    if (ret == SLE_TEAM_OK && save_nv != 0U) {
+        if (role == SLE_TEAM_ROLE_LEADER) {
+            (void)team_nv_config_save(SLE_TEAM_ROLE_LEADER, team_id, team_self_mac_suffix(),
+                channel_hash, g_team_rt.direct_cap, leader_term);
+        } else {
+            (void)team_nv_config_save(SLE_TEAM_ROLE_MEMBER, team_id, leader_suffix, channel_hash, 0U, leader_term);
+        }
+    }
+    osal_printk("[team] role request done role=%u leader=%u team=%u channel=%u suffix=%04X term=%u ret=%d\r\n",
+        (uint8_t)role, leader_id, team_id, channel_hash, leader_suffix, leader_term, ret);
 }
 static void *team_reboot_task(const char *arg)
 {
@@ -1951,6 +2369,9 @@ static void team_handle_cli_queue_once(void)
         team_reboot_schedule("cli");
         return;
     }
+    if (ws63_team_power_cli_handle(msg.line) != 0) {
+        return;
+    }
     if (team_cfg_cli_handle(msg.line) != 0) {
         return;
     }
@@ -1969,19 +2390,27 @@ static void team_restore_saved_config(void)
         team_print("boot unconfigured");
         return;
     }
-    ret = team_cfg_apply_loaded(&cfg);
+    ret = team_cfg_restore_loaded(&cfg);
     g_team_rt.last_role_ret = ret;
     osal_printk("[team-nv] restore role=%u team=%u channel=%u leader_suffix=%04X ret=%d\r\n",
         cfg.role, cfg.team_id, cfg.channel_hash, cfg.leader_suffix, ret);
 }
 static void team_network_task_bootstrap(void)
 {
+    /*
+     * One-time board bring-up for the networking task:
+     * runtime defaults, Web event log, LED/GPS, identity, SoftAP HTTP, UART CLI,
+     * then any saved leader/member role from NV.
+     */
     g_team_rt.direct_cap = SLE_TEAM_DIRECT_CAP_DEFAULT;
     g_team_rt.relay_target = 0U;
     g_team_rt.last_role_ret = SLE_TEAM_OK;
     sle_team_web_event_log_init(&g_team_events);
-    ws63_team_status_led_init(); ws63_team_gps_init();
-    team_identity_init(); ws63_team_http_start(&g_team_node, &g_team_events, CONFIG_SLE_TEAM_WIFI_AP_SSID);
+    ws63_team_status_led_init();
+    ws63_team_gps_init();
+    ws63_team_power_init();
+    team_identity_init();
+    ws63_team_http_start(&g_team_node, &g_team_events, &g_team_http_callbacks, g_team_rt.softap_ssid);
     team_uart_init();
     team_uart_cli_start();
     team_display_publish_status();
@@ -1993,7 +2422,13 @@ static void team_network_task_bootstrap(void)
 static void team_network_tick_role_configured(void)
 {
     uint32_t now_ms = (uint32_t)uapi_tcxo_get_ms();
+    /*
+     * Periodic runtime tick after a role exists. The portable core handles
+     * membership timeouts and policy; the WS63 shell handles scan policy,
+     * relay child-client start, GPS reports, LEDs, and display snapshots.
+     */
     sle_team_node_tick(&g_team_node);
+    ws63_team_power_tick(0U);
     if (g_team_node.cfg.role == SLE_TEAM_ROLE_LEADER) {
         team_leader_update_scan_policy();
         if (sle_team_relay_optimizer_tick(&g_team_node, now_ms, 8000U, &g_team_rt.last_relay_optimize_ms) != 0U) {
@@ -2002,9 +2437,7 @@ static void team_network_tick_role_configured(void)
         }
     }
     team_relay_client_start_if_ready();
-    ws63_team_gps_tick(&g_team_node, now_ms);
-    team_status_led_update();
-    ws63_team_status_led_tick((uint32_t)uapi_tcxo_get_ms());
+    ws63_team_gps_tick(&g_team_node, now_ms, team_battery_percent(NULL));
     team_display_publish_status();
 }
 static void *team_network_task(const char *arg)
@@ -2012,8 +2445,12 @@ static void *team_network_task(const char *arg)
     unused(arg);
     team_network_task_bootstrap();
     while (1) {
+        /* Keep CLI and SLE client progress flowing even before a role is set. */
         team_handle_cli_queue_once();
         sle_uart_client_tick();
+        team_status_led_update();
+        ws63_team_status_led_tick((uint32_t)uapi_tcxo_get_ms());
+        team_handle_role_request_once();
         if (g_team_rt.role_configured != 0U) {
             team_network_tick_role_configured();
         }
@@ -2026,6 +2463,7 @@ static int team_display_init_panel(void)
 #if CONFIG_SLE_TEAM_ST7789_ENABLE
     ws63_st7789_config_t cfg;
 
+    /* Current FPC wiring is supplied by Kconfig so old pin maps stay out of code. */
     (void)memset_s(&cfg, sizeof(cfg), 0, sizeof(cfg));
     cfg.spi_bus = (uint8_t)CONFIG_SLE_TEAM_ST7789_SPI_BUS;
     cfg.sclk_pin = (uint8_t)CONFIG_SLE_TEAM_ST7789_SCLK_PIN;
@@ -2050,6 +2488,11 @@ static void *team_display_task(const char *arg)
     uint32_t last_event_seq = 0U;
 
     unused(arg);
+    /*
+     * Display owns LVGL/ST7789 init, flush tick, and painting. The network task
+     * only publishes snapshots so SLE receive/connect callbacks are not slowed
+     * by panel I/O.
+     */
     if (team_display_init_panel() != 0) {
         osal_printk("[display] st7789 disabled or init failed\r\n");
         return NULL;

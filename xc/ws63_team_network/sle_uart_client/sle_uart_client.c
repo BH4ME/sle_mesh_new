@@ -52,6 +52,12 @@ ssapc_write_param_t g_sle_uart_send_param = { 0 };
 static sle_uart_client_seek_filter_cb g_sle_uart_seek_filter = NULL;
 static void *g_sle_uart_seek_filter_user_ctx = NULL;
 
+/*
+ * One physical SLE ACL link as seen by the local client role.
+ *
+ * The mesh core works with logical route IDs. This table is the bridge between
+ * a route/member ID and the SDK connection ID/property handle used for writes.
+ */
 typedef struct {
     uint8_t active;
     uint16_t conn_id;
@@ -77,6 +83,8 @@ static uint8_t g_sle_uart_seek_active = 0U;
 static uint8_t g_sle_uart_seek_stop_for_connect = 0U;
 static uint8_t g_sle_uart_connect_inflight = 0U;
 static uint8_t g_sle_uart_connect_limit = SLE_UART_CLIENT_MAX_CON;
+
+/* Timestamps below bound scan/connect retries so one bad peer cannot stall discovery. */
 static uint32_t g_sle_uart_seek_stop_start_ms = 0U;
 static uint32_t g_sle_uart_connect_start_ms = 0U;
 static uint32_t g_sle_uart_last_force_rescan_ms = 0U;
@@ -115,6 +123,7 @@ static uint8_t sle_uart_client_should_sample_log(uint32_t now_ms, uint32_t *last
 
 static uint8_t sle_uart_client_effective_connect_limit(void)
 {
+    /* The mesh role can lower the limit, but never above the SDK slot count. */
     if (g_sle_uart_connect_limit == 0U || g_sle_uart_connect_limit > SLE_UART_CLIENT_MAX_CON) {
         return SLE_UART_CLIENT_MAX_CON;
     }
@@ -125,6 +134,7 @@ static uint8_t sle_uart_client_has_connect_capacity(void)
 {
     uint8_t used = g_sle_uart_conn_num;
 
+    /* Reserve a slot for the peer that is between "stop seek" and "connected". */
     if (g_sle_uart_connect_inflight != 0U && used < 0xFFU) {
         used++;
     }
@@ -133,6 +143,7 @@ static uint8_t sle_uart_client_has_connect_capacity(void)
 
 static void sle_uart_client_clear_connect_inflight(void)
 {
+    /* Clear the transport-level pending-connect latch after success/failure. */
     g_sle_uart_connect_inflight = 0U;
     g_sle_uart_connect_start_ms = 0U;
 }
@@ -223,6 +234,7 @@ static sle_uart_client_conn_t *sle_uart_client_alloc_conn(uint16_t conn_id)
     }
     for (uint8_t i = 0; i < SLE_UART_CLIENT_MAX_CON; i++) {
         if (g_sle_uart_conns[i].active == 0U) {
+            /* New SDK connection IDs are not trusted until SSAP exchange completes. */
             (void)memset_s(&g_sle_uart_conns[i], sizeof(g_sle_uart_conns[i]), 0, sizeof(g_sle_uart_conns[i]));
             g_sle_uart_conns[i].active = 1U;
             g_sle_uart_conns[i].conn_id = conn_id;
@@ -495,6 +507,7 @@ void sle_uart_client_force_rescan(void)
     if (g_sle_uart_scan_paused != 0U) {
         return;
     }
+    /* Force-rescan is throttled because seek stop/start can pressure BT callbacks. */
     now_ms = sle_uart_client_now_ms();
     if (g_sle_uart_last_force_rescan_ms != 0U &&
         sle_uart_client_elapsed_ms(now_ms, g_sle_uart_last_force_rescan_ms,
@@ -529,6 +542,7 @@ void sle_uart_client_force_rescan(void)
 
 void sle_uart_client_pause_scan_request(const char *reason)
 {
+    /* Used by higher-level role transitions to make scan callbacks quiescent. */
     g_sle_uart_scan_paused = 1U;
     g_sle_uart_force_rescan_pending = 0U;
     g_sle_uart_seek_stop_for_connect = 0U;
@@ -599,6 +613,7 @@ static void sle_uart_client_connect_pending_remote(const char *reason)
     g_sle_uart_force_rescan_pending = 0U;
     g_sle_uart_connect_inflight = 1U;
     g_sle_uart_connect_start_ms = sle_uart_client_now_ms();
+    /* Only one pending address is allowed; later callbacks must match it. */
     ret = sle_connect_remote_device(&g_sle_uart_remote_addr);
     osal_printk("%s connect request addr:%02x:**:**:**:%02x:%02x reason:%s ret:0x%x\r\n",
         SLE_UART_CLIENT_LOG,
@@ -622,6 +637,7 @@ void sle_uart_client_tick(void)
     if (g_sle_uart_connect_inflight != 0U && g_sle_uart_connect_start_ms != 0U &&
         sle_uart_client_elapsed_ms(now_ms, g_sle_uart_connect_start_ms,
         SLE_UART_CONNECT_INFLIGHT_TIMEOUT_MS) != 0U) {
+        /* Recover from SDK paths that never deliver a matching connect result. */
         osal_printk("%s connect inflight timeout addr:%02x:**:**:**:%02x:%02x count:%u limit:%u\r\n",
             SLE_UART_CLIENT_LOG,
             g_sle_uart_remote_addr.addr[0],
@@ -643,6 +659,7 @@ void sle_uart_client_tick(void)
     if ((now_ms - g_sle_uart_seek_stop_start_ms) < SLE_UART_CONNECT_SEEK_STOP_TIMEOUT_MS) {
         return;
     }
+    /* If seek-disable callback is lost, continue with the pending connect anyway. */
     osal_printk("%s seek stop timeout, fallback connect pending addr:%02x:**:**:**:%02x:%02x\r\n",
         SLE_UART_CLIENT_LOG,
         g_sle_uart_remote_addr.addr[0],
@@ -680,6 +697,7 @@ void sle_uart_start_scan(void)
         (now_ms - g_sle_uart_scan_start_ms) < SLE_UART_SCAN_RESTART_MIN_INTERVAL_MS) {
         return;
     }
+    /* Duplicate filtering stays off because the mesh may need repeated RSSI samples. */
     g_sle_uart_scan_start_ms = now_ms;
     sle_seek_param_t param = { 0 };
     param.own_addr_type = 0;
@@ -756,6 +774,10 @@ static void sle_uart_client_sample_seek_result_info_cbk(sle_seek_result_info_t *
     g_sle_uart_scan_start_ms = now_ms;
     matched_name = sle_uart_client_buffer_contains(seek_result_data->data, seek_result_data->data_length,
         server_name, server_name_len);
+    /*
+     * The app-level filter checks route ID, team policy, and firmware fingerprint
+     * before transport spends a connection slot.
+     */
     if (g_sle_uart_seek_filter != NULL) {
         passed_filter = g_sle_uart_seek_filter(seek_result_data, g_sle_uart_seek_filter_user_ctx);
     } else {
@@ -787,6 +809,7 @@ static void sle_uart_client_sample_seek_result_info_cbk(sle_seek_result_info_t *
             return;
         }
         memcpy_s(&g_sle_uart_remote_addr, sizeof(sle_addr_t), &seek_result_data->addr, sizeof(sle_addr_t));
+        /* The SDK expects seek to stop before a connect request is issued. */
         g_sle_uart_seek_stop_for_connect = 1U;
         g_sle_uart_seek_stop_start_ms = sle_uart_client_now_ms();
         if (g_sle_uart_scan_paused != 0U) {
@@ -806,6 +829,7 @@ static void sle_uart_client_sample_seek_disable_cbk(errcode_t status)
 {
     uint8_t do_connect = g_sle_uart_seek_stop_for_connect;
 
+    /* Seek-disable is the normal handoff point from scanning to connecting. */
     g_sle_uart_seek_active = 0U;
     g_sle_uart_scan_start_ms = 0U;
     if (g_sle_uart_scan_paused != 0U) {
@@ -845,6 +869,7 @@ static void sle_uart_client_sample_seek_cbk_register(void)
 {
     errcode_t ret;
 
+    /* Merge with server-side announce callbacks; both roles share the SDK callback table. */
     g_sle_uart_seek_cbk.sle_enable_cb = sle_uart_client_sample_sle_enable_cbk;
     g_sle_uart_seek_cbk.seek_enable_cb = sle_uart_client_sample_seek_enable_cbk;
     g_sle_uart_seek_cbk.seek_result_cb = sle_uart_client_sample_seek_result_info_cbk;
@@ -865,6 +890,7 @@ void sle_uart_client_handle_connect_state_changed(uint16_t conn_id, const sle_ad
 
     osal_printk("%s conn state changed disc_reason:0x%x\r\n", SLE_UART_CLIENT_LOG, disc_reason);
     if (conn_state == SLE_ACB_STATE_CONNECTED) {
+        /* Connected means ACL is up; route binding still waits for mesh packets. */
         conn = sle_uart_client_alloc_conn(conn_id);
         sle_uart_client_clear_connect_inflight();
         osal_printk("%s SLE_ACB_STATE_CONNECTED\r\n", SLE_UART_CLIENT_LOG);
@@ -906,10 +932,12 @@ void sle_uart_client_handle_connect_state_changed(uint16_t conn_id, const sle_ad
         sle_uart_client_clear_connect_inflight();
         if (was_connect_inflight != 0U && addr != NULL &&
             memcmp(&g_sle_uart_remote_addr, addr, sizeof(g_sle_uart_remote_addr)) == 0) {
+            /* A failed pending connect frees the reserved slot immediately. */
             sle_uart_start_scan();
             return;
         }
         if (conn != NULL && addr != NULL && sle_uart_client_addr_equal(&conn->addr, addr) == 0U) {
+            /* Ignore stale events for an address that no longer owns this conn_id. */
             osal_printk("%s ignore state-none conn_id:%u active:%02x:**:**:**:%02x:%02x "
                 "event:%02x:**:**:**:%02x:%02x\r\n",
                 SLE_UART_CLIENT_LOG,
@@ -926,6 +954,7 @@ void sle_uart_client_handle_connect_state_changed(uint16_t conn_id, const sle_ad
         sle_uart_client_clear_connect_inflight();
         if (was_connect_inflight != 0U && addr != NULL &&
             memcmp(&g_sle_uart_remote_addr, addr, sizeof(g_sle_uart_remote_addr)) == 0) {
+            /* Disconnect for the pending address is treated as a connect failure. */
             sle_uart_start_scan();
             return;
         }
@@ -937,6 +966,7 @@ void sle_uart_client_handle_connect_state_changed(uint16_t conn_id, const sle_ad
         }
         if (conn != NULL && disconnect_addr_ptr != NULL &&
             sle_uart_client_addr_equal(&conn->addr, disconnect_addr_ptr) == 0U) {
+            /* A stale disconnect must not tear down the active parent/child link. */
             osal_printk("%s ignore disconnect conn_id:%u active:%02x:**:**:**:%02x:%02x "
                 "event:%02x:**:**:**:%02x:%02x\r\n",
                 SLE_UART_CLIENT_LOG,
@@ -1038,6 +1068,7 @@ static void sle_uart_client_sample_find_property_cbk(uint8_t client_id, uint16_t
                 "descriptors count: %d status:%d property->handle %d\r\n", SLE_UART_CLIENT_LOG,
                 client_id, conn_id, property->operate_indication,
                 property->descriptors_count, status, property->handle);
+    /* Dynamic discovery is supported, but the fixed profile fallback is enough for this mesh. */
     sle_uart_client_mark_ready(property->handle, "property-discovery");
     sle_uart_client_mark_conn_ready(conn_id, "property-discovery");
 }
@@ -1071,6 +1102,7 @@ static void sle_uart_client_sample_write_cfm_cb(uint8_t client_id, uint16_t conn
 static void sle_uart_client_sample_ssapc_cbk_register(ssapc_notification_callback notification_cb,
                                                       ssapc_notification_callback indication_cb)
 {
+    /* SSAP callbacks deliver mesh packets upward and write confirmations downward. */
     g_sle_uart_ssapc_cbk.exchange_info_cb = sle_uart_client_sample_exchange_info_cbk;
     g_sle_uart_ssapc_cbk.find_structure_cb = sle_uart_client_sample_find_structure_cbk;
     g_sle_uart_ssapc_cbk.ssapc_find_property_cbk = sle_uart_client_sample_find_property_cbk;
@@ -1086,6 +1118,7 @@ void sle_uart_client_init(ssapc_notification_callback notification_cb, ssapc_ind
 {
     errcode_t ret;
 
+    /* Client init is non-blocking; enable callback will start scanning when ready. */
     sle_uart_client_sample_seek_cbk_register();
     sle_uart_client_sample_ssapc_cbk_register(notification_cb, indication_cb);
     g_sle_uart_enable_inflight = 1U;
@@ -1109,6 +1142,7 @@ errcode_t sle_uart_client_send_by_conn(uint16_t conn_id, const uint8_t *data, ui
     if (param == NULL || data == NULL || len == 0U || g_sle_uart_discovery_ready == 0U ||
         conn == NULL || conn->ready == 0U) {
         if (conn != NULL && conn->exchange_requested == 0U) {
+            /* Lazy recovery: a send attempt can kick SSAP exchange if callbacks lagged. */
             sle_uart_client_exchange_once(conn_id, "send-not-ready");
         }
         return ERRCODE_SLE_FAIL;
@@ -1158,6 +1192,7 @@ uint8_t sle_uart_client_bind_member_conn(uint8_t member_id, uint16_t conn_id)
         osal_printk("%s recover conn_id:%u from packet bind member:%u\r\n",
             SLE_UART_CLIENT_LOG, conn_id, member_id);
     }
+    /* Binding is how the app maps a logical route/member to this physical link. */
     for (uint8_t i = 0; i < SLE_UART_CLIENT_MAX_CON; i++) {
         if (g_sle_uart_conns[i].active != 0U && g_sle_uart_conns[i].conn_id != conn_id &&
             g_sle_uart_conns[i].member_id == member_id) {

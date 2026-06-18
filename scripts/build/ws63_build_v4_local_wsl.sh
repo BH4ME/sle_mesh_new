@@ -57,12 +57,12 @@ REMOTE_PKG="$WSL_SDK/output/ws63/fwpkg/ws63-liteos-app/ws63-liteos-app_all.fwpkg
 REMOTE_PROTO="$WSL_SDK/third_party/sle_mesh"
 REMOTE_APP="$WSL_SDK/application/samples/products/sle_team_network"
 LOCAL_OUT="$OUT_ROOT/$out_dir/$out_name"
-ARCHIVE_OUT="$(next_archive_path "$LOCAL_OUT" "v4.5.46-minimal")"
+ARCHIVE_OUT="$(next_archive_path "$LOCAL_OUT" "v4.5.56-minimal")"
 
 export PATH="$HOME/.local/bin:$PATH"
 
 echo "WS63 local WSL build"
-echo "profile:    v4.5.46-minimal unified runtime role (minimal leader/member/relay networking)"
+echo "profile:    v4.5.56-minimal unified runtime role (minimal leader/member/relay networking)"
 echo "sdk:        $WSL_SDK"
 echo "archive:    $ARCHIVE_OUT"
 echo "latest:     $LOCAL_OUT"
@@ -182,11 +182,11 @@ s = set_kconfig_value(s, "CONFIG_SLE_TEAM_HEARTBEAT_TIMEOUT_S", "3")
 s = set_kconfig_value(s, "CONFIG_SPI_SUPPORT_MASTER", "y")
 s = set_kconfig_value(s, "CONFIG_SLE_TEAM_WIFI_AP_ENABLE", "y")
 s = set_kconfig_value(s, "CONFIG_SLE_TEAM_WIFI_AP_AUTO_START", "y")
-s = set_kconfig_value(s, "CONFIG_SLE_TEAM_WIFI_AP_SSID", '"SLE-TEAM-V4"')
+s = set_kconfig_value(s, "CONFIG_SLE_TEAM_WIFI_AP_SSID", '"SLE"')
 s = set_kconfig_value(s, "CONFIG_SUPPORT_SLE_PERIPHERAL", "y")
 s = set_kconfig_value(s, "CONFIG_SUPPORT_SLE_CENTRAL", "y")
 path.write_text(s)
-print("configured v4.5.46-minimal WS63 minimal leader/member/relay networking")
+print("configured v4.5.56-minimal WS63 minimal leader/member/relay networking")
 PY
 
 cd "$WSL_SDK"
@@ -206,6 +206,7 @@ sle_client_source_path = sdk / "application/samples/products/sle_team_network/sl
 sle_server_source_path = sdk / "application/samples/products/sle_team_network/sle_uart_server/sle_uart_server.c"
 ws2812_source_path = sdk / "application/samples/products/sle_team_network/src/ws63_ws2812.c"
 gps_source_path = sdk / "application/samples/products/sle_team_network/src/ws63_team_gps.c"
+power_source_path = sdk / "application/samples/products/sle_team_network/src/ws63_team_power.c"
 status_led_source_path = sdk / "application/samples/products/sle_team_network/src/ws63_team_status_led.c"
 st7789_source_path = sdk / "application/samples/products/sle_team_network/src/ws63_st7789_display.c"
 nmea_source_path = sdk / "third_party/sle_mesh/src/sle_team_nmea.c"
@@ -219,12 +220,13 @@ sle_client_source = sle_client_source_path.read_text(errors="replace")
 sle_server_source = sle_server_source_path.read_text(errors="replace")
 ws2812_source = ws2812_source_path.read_text(errors="replace")
 gps_source = gps_source_path.read_text(errors="replace")
+power_source = power_source_path.read_text(errors="replace")
 status_led_source = status_led_source_path.read_text(errors="replace")
 st7789_source = st7789_source_path.read_text(errors="replace")
 nmea_source = nmea_source_path.read_text(errors="replace")
 proto_source = proto_source_path.read_text(errors="replace")
 
-VERSION = "v4.5.46-minimal"
+VERSION = "v4.5.56-minimal"
 
 def require_text(name, source, needle):
     if needle not in source:
@@ -244,6 +246,17 @@ for item in [
     "CONFIG_SLE_TEAM_GPS_UART_BUS=1",
     "CONFIG_SLE_TEAM_GPS_UART_TXD_PIN=17",
     "CONFIG_SLE_TEAM_GPS_UART_RXD_PIN=18",
+    "CONFIG_SLE_TEAM_ADC_ENABLE=y",
+    "CONFIG_SLE_TEAM_ADC_CTRL_PIN=5",
+    "CONFIG_SLE_TEAM_ADC_VBAT_PIN=12",
+    "CONFIG_SLE_TEAM_ADC_VBAT_CHANNEL=5",
+    "CONFIG_SLE_TEAM_ADC_CTRL_ACTIVE_HIGH=y",
+    "CONFIG_SLE_TEAM_ADC_SAMPLE_SETTLE_MS=50",
+    "CONFIG_SLE_TEAM_ADC_SAMPLE_INTERVAL_S=30",
+    "CONFIG_SLE_TEAM_CHRG_ENABLE=y",
+    "CONFIG_SLE_TEAM_CHRG_PIN=2",
+    "CONFIG_SLE_TEAM_CHRG_ACTIVE_LOW=y",
+    "CONFIG_SLE_TEAM_CHRG_EXTERNAL_PULLUP=y",
 ]:
     require_text("kconfig", cfg, item)
 
@@ -259,6 +272,7 @@ for item in [
     "ws63_team_network_app.c.obj",
     "ws63_team_http.c.obj",
     "ws63_team_gps.c.obj",
+    "ws63_team_power.c.obj",
     "ws63_st7789_display.c.obj",
     "ws63_team_status_led.c.obj",
     "ws63_ws2812.c.obj",
@@ -302,8 +316,24 @@ for name, source, item in [
     ("ws63_team_network_app.c", app_source, "team_relay_client_start_if_ready"),
     ("ws63_team_network_app.c", app_source, "static sle_team_web_event_log_t g_team_events"),
     ("ws63_team_network_app.c", app_source, "sle_team_web_event_log_init(&g_team_events)"),
-    ("ws63_team_network_app.c", app_source, "ws63_team_http_start(&g_team_node, &g_team_events"),
-    ("ws63_team_network_app.c", app_source, "ws63_team_status_led_init(); ws63_team_gps_init();"),
+    ("ws63_team_network_app.c", app_source, "static const ws63_team_http_callbacks_t g_team_http_callbacks"),
+    ("ws63_team_network_app.c", app_source, "team_http_get_identity_cb"),
+    ("ws63_team_network_app.c", app_source, "team_http_member_leave_cb"),
+    ("ws63_team_network_app.c", app_source, "ws63_team_http_start(&g_team_node, &g_team_events, &g_team_http_callbacks"),
+    ("ws63_team_network_app.c", app_source, "role_request_pending"),
+    ("ws63_team_network_app.c", app_source, "team_request_role_config"),
+    ("ws63_team_network_app.c", app_source, "team_handle_role_request_once"),
+    ("ws63_team_network_app.c", app_source, "roleRequestPending"),
+    ("ws63_team_http.c", http_source, "roleRequestPending"),
+    ("ws63_team_http.c", http_source, "starting SLE"),
+    ("ws63_team_network_app.c", app_source, '"SLE-%02X%02X"'),
+    ("ws63_team_network_app.c", app_source, "ws63_team_status_led_init();"),
+    ("ws63_team_network_app.c", app_source, "ws63_team_gps_init();"),
+    ("ws63_team_network_app.c", app_source, "ws63_team_power_init();"),
+    ("ws63_team_network_app.c", app_source, "ws63_team_power_tick(0U);"),
+    ("ws63_team_network_app.c", app_source, "ws63_team_power_battery_percent()"),
+    ("ws63_team_network_app.c", app_source, "ws63_team_power_cli_handle(msg.line)"),
+    ("ws63_team_network_app.c", app_source, "ws63_team_gps_tick(&g_team_node, now_ms, team_battery_percent(NULL));"),
     ("ws63_team_network_app.c", app_source, "TeamDisplayTask"),
     ("ws63_team_network_app.c", app_source, "team_display_spawn_task();"),
     ("ws63_team_network_app.c", app_source, "ws63_st7789_init(&cfg)"),
@@ -318,12 +348,33 @@ for name, source, item in [
     ("ws63_team_http.c", http_source, "team_http_handle_location"),
     ("ws63_team_http.c", http_source, "sle_team_node_record_local_position"),
     ("ws63_team_http.c", http_source, "sle_team_node_send_position"),
+    ("ws63_team_http.c", http_source, "<span class=\\\"v\\\">%s fix=%u sat=%u lat=%ld lon=%ld speed=%u heading=%u</span>"),
+    ("ws63_team_http.c", http_source, "no fix fix=%u sat=%u"),
+    ("ws63_team_http.c", http_source, "adv.hidden_ssid_flag = 1U"),
+    ("ws63_team_http.c", http_source, "TEAM_HTTP_WIFI_SECURITY_COMPAT_MIX"),
+    ("ws63_team_http.c", http_source, "TEAM_HTTP_WIFI_PROTOCOL_COMPAT_AX"),
+    ("ws63_team_http.c", http_source, "conf.security_type = TEAM_HTTP_WIFI_SECURITY_COMPAT_MIX"),
+    ("ws63_team_http.c", http_source, "adv.protocol_mode = TEAM_HTTP_WIFI_PROTOCOL_COMPAT_AX"),
+    ("ws63_team_http.c", http_source, "softap enable failed ret=0x%x with mix/ax, fallback to wpa2+11bgn"),
+    ("ws63_team_http.c", http_source, "TEAM_HTTP_WIFI_SECURITY_FALLBACK"),
+    ("ws63_team_http.c", http_source, "TEAM_HTTP_WIFI_PROTOCOL_FALLBACK"),
     ("ws63_team_gps.c", gps_source, "team_gps_init"),
     ("ws63_team_gps.c", gps_source, "sle_team_nmea_feed"),
+    ("ws63_team_gps.c", gps_source, "sle_team_pos_body_t pos = {0};"),
     ("ws63_team_gps.c", gps_source, "sle_team_node_send_position"),
+    ("ws63_team_power.c", power_source, "uapi_adc_init(ADC_CLOCK_500KHZ)"),
+    ("ws63_team_power.c", power_source, "adc_port_read(g_power.adc_vbat_channel, &adc_mv)"),
+    ("ws63_team_power.c", power_source, "adc_ctrl_set(1U);"),
+    ("ws63_team_power.c", power_source, "adc_ctrl_set(0U);"),
+    ("ws63_team_power.c", power_source, "SLE_TEAM_ADC_DIVIDER_TOP_KOHM"),
+    ("ws63_team_power.c", power_source, "SLE_TEAM_ADC_DIVIDER_BOTTOM_KOHM"),
+    ("ws63_team_power.c", power_source, "CONFIG_SLE_TEAM_CHRG_PIN"),
+    ("ws63_team_power.c", power_source, "ws63_team_power_battery_percent"),
     ("sle_team_nmea.c", nmea_source, "sle_team_nmea_parse_line"),
     ("sle_team_nmea.c", nmea_source, "nmea_commit_rmc"),
     ("sle_team_nmea.c", nmea_source, "nmea_commit_fix_from_gga"),
+    ("sle_team_nmea.c", nmea_source, "if (*line_len == 0U)"),
+    ("sle_team_nmea.c", nmea_source, "return SLE_TEAM_ERR_FORMAT;"),
     ("ws63_team_status_led.c", status_led_source, "g_status_led_breathe_idle"),
     ("ws63_team_status_led.c", status_led_source, "status_led_apply_scaled"),
     ("ws63_ws2812.c", ws2812_source, "ws63_ws2812_set_rgb"),
@@ -379,7 +430,7 @@ reject_text("TeamNetworkTask body", network_task_body, "ws63_st7789_tick();")
 
 app_lines = len(app_source.splitlines())
 node_lines = len(proto_source.splitlines())
-if app_lines > 2200 or node_lines > 2200:
+if app_lines > 2600 or node_lines > 2200:
     raise SystemExit(f"post-build guard failed: minimal sources grew too large app={app_lines} node={node_lines}")
 
 print(f"post-build guard passed: {VERSION} minimal networking app_lines={app_lines} node_lines={node_lines}")

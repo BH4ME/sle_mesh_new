@@ -11,17 +11,25 @@
 #define SLE_TEAM_ADV_ROUTE_HINT_TOTAL_LEN 7U
 #define SLE_TEAM_SCAN_BROADCAST_ID 0xFFU
 
+/* Little-endian helpers keep the wire format stable across the MCU. */
 static void sle_team_put_u16_le(uint8_t *buf, uint16_t value)
 {
     buf[0] = (uint8_t)(value & 0xFFU);
     buf[1] = (uint8_t)((value >> 8) & 0xFFU);
 }
 
+/* Read the same little-endian encoding back from the wire. */
 static uint16_t sle_team_get_u16_le(const uint8_t *buf)
 {
     return (uint16_t)buf[0] | ((uint16_t)buf[1] << 8);
 }
 
+/*
+ * Build a fixed-size app message body.
+ *
+ * Most packet builders are simple wrappers around this helper: fill the app
+ * header fields, then encode the packet into bytes for the transport layer.
+ */
 static int sle_team_build_fixed_body(uint8_t app_msg_type, uint8_t team_id, uint8_t src_id, uint8_t dst_id,
     uint16_t seq, const uint8_t *body, uint16_t body_len, uint8_t *out_buf, size_t out_buf_len, uint16_t *out_len)
 {
@@ -44,11 +52,13 @@ static int sle_team_build_fixed_body(uint8_t app_msg_type, uint8_t team_id, uint
     return sle_team_encode_app_packet(&packet, out_buf, out_buf_len, out_len);
 }
 
+/* Pack version/payload/route into the compact 1-byte mesh header. */
 uint8_t sle_team_make_header(uint8_t version, uint8_t payload_type, uint8_t route_type)
 {
     return (uint8_t)(((version & 0x03U) << 6) | ((payload_type & 0x0FU) << 2) | (route_type & 0x03U));
 }
 
+/* Encode hop count and hash width for the routing/path side channel. */
 uint8_t sle_team_make_path_length(uint8_t hop_count, uint8_t path_hash_size)
 {
     uint8_t hash_code;
@@ -61,6 +71,7 @@ uint8_t sle_team_make_path_length(uint8_t hop_count, uint8_t path_hash_size)
     return (uint8_t)((hash_code << 6) | (hop_count & 0x3FU));
 }
 
+/* Serialize the outer mesh wrapper used for direct and relay forwarding. */
 int sle_team_encode_mesh_packet(const sle_team_mesh_packet_t *packet, uint8_t *out_buf, size_t out_buf_len,
     size_t *out_len)
 {
@@ -119,6 +130,7 @@ int sle_team_encode_mesh_packet(const sle_team_mesh_packet_t *packet, uint8_t *o
     return SLE_TEAM_OK;
 }
 
+/* Parse the outer mesh wrapper before the app packet is decoded. */
 int sle_team_decode_mesh_packet(sle_team_mesh_packet_t *packet, const uint8_t *buf, size_t buf_len)
 {
     size_t offset;
@@ -179,6 +191,7 @@ int sle_team_decode_mesh_packet(sle_team_mesh_packet_t *packet, const uint8_t *b
     return SLE_TEAM_OK;
 }
 
+/* Serialize the inner team packet header plus its body bytes. */
 int sle_team_encode_app_packet(const sle_team_app_packet_t *packet, uint8_t *out_buf, size_t out_buf_len,
     uint16_t *out_len)
 {
@@ -214,6 +227,7 @@ int sle_team_encode_app_packet(const sle_team_app_packet_t *packet, uint8_t *out
     return SLE_TEAM_OK;
 }
 
+/* Recover the inner packet fields and point body at the decoded payload. */
 int sle_team_decode_app_packet(sle_team_app_packet_t *packet, const uint8_t *buf, size_t buf_len)
 {
     uint16_t body_len;
@@ -240,6 +254,7 @@ int sle_team_decode_app_packet(sle_team_app_packet_t *packet, const uint8_t *buf
     return SLE_TEAM_OK;
 }
 
+/* Message builders below are thin wrappers around the common app header. */
 int sle_team_build_hello(uint8_t team_id, uint8_t src_id, uint8_t dst_id, uint16_t seq,
     const sle_team_hello_body_t *body, uint8_t *out_buf, size_t out_buf_len, uint16_t *out_len)
 {
@@ -310,6 +325,11 @@ int sle_team_build_route_update(uint8_t team_id, uint8_t src_id, uint8_t dst_id,
         (const uint8_t *)body, (uint16_t)sizeof(*body), out_buf, out_buf_len, out_len);
 }
 
+/*
+ * SLE advertisements carry a private route-hint block:
+ *   len,type,magic0,magic1,route_id,fw_compat_lo,fw_compat_hi
+ * Scan-time route and firmware filtering both start from this block.
+ */
 static uint16_t sle_team_find_adv_route_hint(const uint8_t *data, uint16_t len)
 {
     uint16_t index;
@@ -328,6 +348,7 @@ static uint16_t sle_team_find_adv_route_hint(const uint8_t *data, uint16_t len)
     return UINT16_MAX;
 }
 
+/* Return 0 when the advertisement does not expose a usable route id. */
 uint8_t sle_team_scan_route_id_from_data(const uint8_t *data, uint16_t len)
 {
     uint16_t index = sle_team_find_adv_route_hint(data, len);
@@ -343,6 +364,7 @@ uint8_t sle_team_scan_route_id_from_data(const uint8_t *data, uint16_t len)
     return 0U;
 }
 
+/* Missing fingerprint means "unknown/any"; concrete mismatches are rejected later. */
 uint16_t sle_team_scan_fw_compat_from_data(const uint8_t *data, uint16_t len)
 {
     uint16_t index = sle_team_find_adv_route_hint(data, len);
@@ -353,6 +375,7 @@ uint16_t sle_team_scan_fw_compat_from_data(const uint8_t *data, uint16_t len)
     return (uint16_t)(((uint16_t)data[index + 6U] << 8U) | data[index + 5U]);
 }
 
+/* Add the group-data mini wrapper before encoding the outer mesh packet. */
 int sle_team_wrap_mesh_group_data(const uint8_t channel_hash, const uint8_t cipher_mac[2],
     const uint8_t *app_payload, uint16_t app_payload_len, sle_team_route_type_t route_type,
     sle_team_mesh_packet_t *packet)
@@ -380,6 +403,7 @@ int sle_team_wrap_mesh_group_data(const uint8_t channel_hash, const uint8_t ciph
     return SLE_TEAM_OK;
 }
 
+/* Remove the group-data mini wrapper and expose the embedded app packet. */
 int sle_team_unwrap_mesh_group_data(const sle_team_mesh_packet_t *packet, uint8_t *channel_hash,
     uint8_t cipher_mac[2], const uint8_t **app_payload, uint16_t *app_payload_len)
 {

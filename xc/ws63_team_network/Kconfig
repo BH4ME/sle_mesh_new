@@ -345,7 +345,7 @@ config SLE_TEAM_WIFI_AP_AUTO_START
 
 config SLE_TEAM_WIFI_AP_SSID
     string "WiFi SoftAP SSID"
-    default "SLE-TEAM-V4"
+    default "SLE"
     depends on SLE_TEAM_WIFI_AP_ENABLE
 
 config SLE_TEAM_WIFI_AP_PSK

@@ -6,16 +6,19 @@
 #define SLE_TEAM_OPT_RSSI_HYSTERESIS_DB 12
 #define SLE_TEAM_OPT_RELAY_CHILD_CAP 7U
 
+/* Route id 0 and broadcast are not real member records. */
 static uint8_t opt_valid_member_id(uint8_t member_id)
 {
     return (uint8_t)(member_id != 0U && member_id != SLE_TEAM_BROADCAST_ID);
 }
 
+/* Unknown RSSI is deliberately worse than every usable measured RSSI. */
 static int8_t opt_rssi_score(int8_t rssi_dbm)
 {
     return rssi_dbm == SLE_TEAM_RSSI_UNKNOWN ? (int8_t)-128 : rssi_dbm;
 }
 
+/* Wrap-safe elapsed check for second counters. */
 static uint8_t opt_elapsed_exceeds(uint32_t now_s, uint32_t mark_s, uint32_t limit_s)
 {
     if (mark_s == 0U || limit_s == 0U) {
@@ -24,6 +27,7 @@ static uint8_t opt_elapsed_exceeds(uint32_t now_s, uint32_t mark_s, uint32_t lim
     return (uint8_t)((uint32_t)(now_s - mark_s) > limit_s ? 1U : 0U);
 }
 
+/* Only leader-direct nodes are safe candidates for this first optimizer. */
 static uint8_t opt_is_leader_direct(const sle_team_node_t *node, const sle_team_member_record_t *member)
 {
     if (node == NULL || member == NULL) {
@@ -32,6 +36,7 @@ static uint8_t opt_is_leader_direct(const sle_team_node_t *node, const sle_team_
     return (uint8_t)(member->parent_id == node->cfg.self_id || member->parent_id == node->cfg.leader_id);
 }
 
+/* Pairing/allow-list gaps mean the group is still changing, so do not optimize. */
 static uint8_t opt_allowed_member_missing(const sle_team_node_t *node)
 {
     uint8_t i;
@@ -50,6 +55,7 @@ static uint8_t opt_allowed_member_missing(const sle_team_node_t *node)
     return 0U;
 }
 
+/* Any recovery, pending policy, or half-offline record makes the table unstable. */
 static uint8_t opt_has_unstable_member(const sle_team_node_t *node)
 {
     uint8_t i;
@@ -74,6 +80,7 @@ static uint8_t opt_has_unstable_member(const sle_team_node_t *node)
     return 0U;
 }
 
+/* First production pass only handles exactly one childless leader-direct relay. */
 static uint8_t opt_has_complex_relay_topology(const sle_team_node_t *node)
 {
     uint8_t i;
@@ -94,6 +101,7 @@ static uint8_t opt_has_complex_relay_topology(const sle_team_node_t *node)
     return (uint8_t)(relay_count == 1U ? 0U : 1U);
 }
 
+/* Best replacement: online, leader-direct, recent, non-relay, strong RSSI. */
 static sle_team_member_record_t *opt_pick_best_candidate(sle_team_node_t *node, uint32_t now_s, uint32_t timeout_s)
 {
     uint8_t i;
@@ -118,6 +126,7 @@ static sle_team_member_record_t *opt_pick_best_candidate(sle_team_node_t *node, 
     return best;
 }
 
+/* Worst current relay, but only if it has no children to strand. */
 static sle_team_member_record_t *opt_pick_worst_childless_relay(sle_team_node_t *node, uint32_t now_s,
     uint32_t timeout_s)
 {
@@ -172,9 +181,11 @@ int sle_team_relay_optimizer_run(sle_team_node_t *node, uint32_t now_s)
     }
     candidate_score = opt_rssi_score(candidate->last_rssi_dbm);
     victim_score = opt_rssi_score(victim->last_rssi_dbm);
+    /* Hysteresis prevents rapid relay flapping on small RSSI changes. */
     if (candidate_score < (int8_t)(victim_score + SLE_TEAM_OPT_RSSI_HYSTERESIS_DB)) {
         return SLE_TEAM_OK;
     }
+    /* Swap policy in the leader table first, then push CONFIG/ROUTE_UPDATE. */
     candidate->relay_allowed = 1U;
     candidate->relay_tier = 1U;
     candidate->max_downstream = SLE_TEAM_OPT_RELAY_CHILD_CAP;

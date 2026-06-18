@@ -31,6 +31,13 @@
 static char g_sle_uuid_app_uuid[UUID_LEN_2] = { 0x12, 0x34 };
 /* server notify property uuid for test */
 static char g_sle_property_value[OCTET_BIT_LEN] = { 0x0, 0x0, 0x0, 0x0, 0x0, 0x0 };
+
+/*
+ * Server-side physical connection table.
+ *
+ * Leaders and relays accept inbound SLE links here. The mesh app later binds a
+ * logical member route ID to each SDK conn_id after it sees a valid packet.
+ */
 typedef struct {
     uint8_t active;
     uint16_t conn_id;
@@ -83,6 +90,7 @@ errcode_t sle_uart_server_read_remote_rssi(void)
 {
     uint8_t requested = 0U;
 
+    /* RSSI is sampled for relay optimization; packet liveness remains separate. */
     for (uint8_t i = 0; i < SLE_UART_SERVER_MAX_CONNECTIONS; i++) {
         if (g_sle_conns[i].active == 0U) {
             continue;
@@ -121,6 +129,7 @@ static sle_uart_server_conn_t *sle_uart_server_alloc_conn(uint16_t conn_id)
     }
     for (uint8_t i = 0; i < SLE_UART_SERVER_MAX_CONNECTIONS; i++) {
         if (g_sle_conns[i].active == 0U) {
+            /* Conn is active before it is bound to a route/member ID. */
             g_sle_conns[i].active = 1U;
             g_sle_conns[i].conn_id = conn_id;
             g_sle_conns[i].member_id = 0U;
@@ -184,6 +193,7 @@ uint8_t sle_uart_server_bind_member_conn(uint8_t member_id, uint16_t conn_id)
         sample_at_log_print("%s recover conn_id:%x from packet bind member:%u\r\n",
             SLE_UART_SERVER_LOG, conn_id, member_id);
     }
+    /* A logical member may only own one server-side connection slot. */
     for (uint8_t i = 0; i < SLE_UART_SERVER_MAX_CONNECTIONS; i++) {
         if (g_sle_conns[i].active != 0U && g_sle_conns[i].conn_id != conn_id &&
             g_sle_conns[i].member_id == member_id) {
@@ -453,6 +463,7 @@ static errcode_t sle_uart_server_send_report_to_conn(uint16_t conn_id, const uin
     if (data == NULL || len == 0U || len > sizeof(receive_buf)) {
         return ERRCODE_SLE_FAIL;
     }
+    /* All mesh payloads are delivered through the fixed notify property. */
     param.handle = g_property_handle;
     param.type = SSAP_PROPERTY_TYPE_VALUE;
     param.value = receive_buf;
@@ -465,6 +476,7 @@ static errcode_t sle_uart_server_send_report_to_conn(uint16_t conn_id, const uin
 
 errcode_t sle_uart_server_send_report_by_conn(uint16_t conn_id, const uint8_t *data, uint16_t len)
 {
+    /* The caller must target an active physical connection. */
     if (sle_uart_server_find_conn(conn_id) == NULL) {
         return ERRCODE_SLE_FAIL;
     }
@@ -507,6 +519,7 @@ void sle_uart_server_handle_connect_state_changed(uint16_t conn_id, const sle_ad
             SLE_UART_SERVER_LOG, addr->addr[BT_INDEX_0], addr->addr[BT_INDEX_4]);
     }
     if (conn_state == SLE_ACB_STATE_CONNECTED) {
+        /* Connection is accepted first; route/member binding happens on packet RX. */
         sle_uart_server_conn_t *conn = sle_uart_server_alloc_conn(conn_id);
         if (conn == NULL) {
             sample_at_log_print("%s connection table full conn_id:%x\r\n", SLE_UART_SERVER_LOG, conn_id);
@@ -521,6 +534,7 @@ void sle_uart_server_handle_connect_state_changed(uint16_t conn_id, const sle_ad
         sample_at_log_print("%s keep announce stable after connect\r\n", SLE_UART_SERVER_LOG);
         sample_at_log_print("%s connected count:%u\r\n", SLE_UART_SERVER_LOG, g_sle_conn_count);
     } else if (conn_state == SLE_ACB_STATE_DISCONNECTED) {
+        /* Drop the physical slot and restart advertising for replacement links. */
         sle_uart_server_remove_conn(conn_id);
         g_sle_pair_hdl = (g_sle_conn_count > 0U) ? (get_connect_id() + 1U) : 0U;
         (void)sle_uart_server_adv_restart();
@@ -642,6 +656,7 @@ errcode_t sle_uart_server_init(ssaps_read_request_callback ssaps_read_callback, 
 {
     errcode_t ret;
 
+    /* Bring up SDK state, SSAP service, then the connectable advertiser. */
     /* 使能SLE */
     if (enable_sle() != ERRCODE_SUCC) {
         sample_at_log_print("[SLE Server] sle enbale fail !\r\n");
@@ -676,5 +691,6 @@ errcode_t sle_uart_server_init(ssaps_read_request_callback ssaps_read_callback, 
 
 void sle_uart_server_register_msg(sle_uart_server_msg_queue sle_uart_server_msg)
 {
+    /* Optional legacy message hook used by sample-style disconnect paths. */
     g_sle_uart_server_msg_queue = sle_uart_server_msg;
 }

@@ -1,14 +1,26 @@
 #include "sle_team_node.h"
 #include <string.h>
+
+/*
+ * Portable leader/member state machine.
+ *
+ * The WS63 app owns radio connections, UART, display, GPS and logs. This file
+ * owns only logical mesh policy: who is allowed in, who is direct, who becomes
+ * a relay, which parent a member should use, and how recovery is confirmed.
+ */
 static const uint8_t g_zero_cipher_mac[2] = {0x00, 0x00};
 #define SLE_TEAM_DIRECT_CAP_DEFAULT 7U
 #define SLE_TEAM_RELAY_CHILD_CAP_DEFAULT 7U
 #define SLE_TEAM_MEMBER_HELLO_INTERVAL_S 1U
 static int sle_team_send_leader_heartbeat(sle_team_node_t *node, uint8_t member_id);
+
+/* Route id 0 and broadcast are control values, not real member ids. */
 static uint8_t sle_team_valid_member_id(uint8_t member_id)
 {
     return (uint8_t)(member_id != 0U && member_id != SLE_TEAM_BROADCAST_ID);
 }
+
+/* Small callback wrappers keep the state machine portable and testable. */
 static uint32_t sle_team_now(const sle_team_node_t *node)
 {
     if (node == NULL || node->ops.now_s == NULL) { return 0U; }
@@ -36,6 +48,8 @@ static void sle_team_mark_joined(sle_team_node_t *node, uint8_t member_id)
         node->ops.on_joined(node->ops.user_ctx, member_id);
     }
 }
+
+/* Leader direct capacity is capped below the physical connection table size. */
 static uint8_t sle_team_leader_direct_cap(const sle_team_node_t *node)
 {
     uint8_t cap = SLE_TEAM_DIRECT_CAP_DEFAULT;
@@ -48,6 +62,8 @@ static uint8_t sle_team_leader_direct_cap(const sle_team_node_t *node)
     if (cap == 0U) { cap = 1U; }
     return cap;
 }
+
+/* Relay child capacity defaults to the same conservative cap unless configured. */
 static uint8_t sle_team_relay_child_cap(const sle_team_node_t *node)
 {
     if (node != NULL && node->cfg.role == SLE_TEAM_ROLE_MEMBER && node->cfg.max_downstream != 0U) {
@@ -55,6 +71,8 @@ static uint8_t sle_team_relay_child_cap(const sle_team_node_t *node)
     }
     return SLE_TEAM_RELAY_CHILD_CAP_DEFAULT;
 }
+
+/* Member records are stable slots keyed by logical route id. */
 static const sle_team_member_record_t *sle_team_find_member_const(const sle_team_node_t *node, uint8_t member_id)
 {
     uint8_t i;
@@ -94,6 +112,8 @@ static sle_team_member_record_t *sle_team_member_slot(sle_team_node_t *node, uin
     free_slot->last_rssi_dbm = SLE_TEAM_RSSI_UNKNOWN;
     return free_slot;
 }
+
+/* Pending records are HELLOs waiting for allow-list/pairing approval. */
 static sle_team_pending_member_t *sle_team_pending_slot(sle_team_node_t *node, uint8_t member_id, uint8_t create)
 {
     uint8_t i;
@@ -141,6 +161,8 @@ uint8_t sle_team_node_is_member_allowed(const sle_team_node_t *node, uint8_t mem
     if (node->cfg.allowed_member_count == 0U) { return 0U; }
     return sle_team_id_in_list(node->cfg.allowed_member_ids, node->cfg.allowed_member_count, member_id);
 }
+
+/* Recompute derived child counts after parent/online/pending state changes. */
 static void sle_team_recompute_child_counts(sle_team_node_t *node)
 {
     uint8_t i;
@@ -165,6 +187,8 @@ static void sle_team_recompute_child_counts(sle_team_node_t *node)
         }
     }
 }
+
+/* Direct count includes pending direct policy because it already reserves capacity. */
 static uint8_t sle_team_direct_online_count(const sle_team_node_t *node)
 {
     uint8_t i;
@@ -180,6 +204,8 @@ static uint8_t sle_team_direct_online_count(const sle_team_node_t *node)
     }
     return count;
 }
+
+/* Pick the best online leader-direct relay with free downstream capacity. */
 static uint8_t sle_team_select_online_relay(const sle_team_node_t *node, uint8_t exclude_id)
 {
     uint8_t i;
@@ -222,6 +248,8 @@ static uint8_t sle_team_select_online_relay(const sle_team_node_t *node, uint8_t
     }
     return best_id;
 }
+
+/* A forwarded child HELLO may prefer the relay that physically delivered it. */
 static uint8_t sle_team_ingress_relay_can_parent(const sle_team_node_t *node, uint8_t relay_id,
     uint8_t child_id)
 {
@@ -241,6 +269,8 @@ static uint8_t sle_team_ingress_relay_can_parent(const sle_team_node_t *node, ui
     cap = relay->max_downstream != 0U ? relay->max_downstream : SLE_TEAM_RELAY_CHILD_CAP_DEFAULT;
     return relay->child_count < cap ? 1U : 0U;
 }
+
+/* Runtime relay grant chooses an already online leader-direct member. */
 static sle_team_member_record_t *sle_team_select_relay_grant_candidate(sle_team_node_t *node)
 {
     uint8_t i;
@@ -265,6 +295,8 @@ static sle_team_member_record_t *sle_team_select_relay_grant_candidate(sle_team_
     }
     return best;
 }
+
+/* Ensure overflow has a usable relay before assigning a new child. */
 static uint8_t sle_team_ensure_relay_for_overflow(sle_team_node_t *node, uint8_t exclude_id)
 {
     sle_team_member_record_t *candidate;
@@ -284,6 +316,8 @@ static uint8_t sle_team_has_relay_recovery_candidate(const sle_team_node_t *node
     }
     return 0U;
 }
+
+/* Pick the freshest recovery candidate, using RSSI/member id only as tie-breakers. */
 static uint8_t sle_team_select_relay_recovery_candidate_id(const sle_team_node_t *node)
 {
     uint8_t i, best_id = 0U;
@@ -305,6 +339,9 @@ static uint8_t sle_team_select_relay_recovery_candidate_id(const sle_team_node_t
     }
     return best_id;
 }
+
+/* During relay recovery, keep using the selected replacement relay if it is
+ * still online. This avoids flip-flopping children between candidate relays. */
 static void sle_team_choose_relay_recovery_candidate(sle_team_node_t *node)
 {
     const sle_team_member_record_t *selected;
@@ -316,6 +353,7 @@ static void sle_team_choose_relay_recovery_candidate(sle_team_node_t *node)
 }
 static void sle_team_grant_recovery_relay_policy(sle_team_node_t *node, sle_team_member_record_t *member)
 {
+    /* Replacement relay is promoted under leader authority before children move. */
     if (node == NULL || member == NULL) { return; }
     member->relay_allowed = 1U;
     member->relay_tier = 1U;
@@ -327,6 +365,8 @@ static void sle_team_finish_relay_recovery_if_done(sle_team_node_t *node)
     uint8_t i, lost_id;
     if (node == NULL || node->relay_recovery_pending == 0U) { return; }
     lost_id = node->relay_recovery_lost_relay_id;
+    /* Recovery is not finished until the lost relay has lost relay authority
+     * and no remaining child still points at it as parent. */
     for (i = 0U; lost_id != 0U && i < SLE_TEAM_MAX_MEMBERS; i++) {
         const sle_team_member_record_t *member = &node->members[i];
         if (member->member_id == lost_id && member->relay_allowed != 0U) { return; }
@@ -360,6 +400,14 @@ int sle_team_node_grant_relay(sle_team_node_t *node, uint8_t member_id)
     sle_team_log(node, "relay granted");
     return SLE_TEAM_OK;
 }
+
+/*
+ * Decide the leader-authoritative parent for a member.
+ *
+ * Normal path: direct to leader while direct_cap has room, otherwise child of a
+ * leader-direct relay. Recovery path: never let the lost relay reclaim relay
+ * authority while replacement relays/children are still being settled.
+ */
 static uint8_t sle_team_assign_parent(sle_team_node_t *node, sle_team_member_record_t *member)
 {
     uint8_t direct_cap;
@@ -371,6 +419,9 @@ static uint8_t sle_team_assign_parent(sle_team_node_t *node, sle_team_member_rec
         return 0U;
     }
     sle_team_recompute_child_counts(node);
+    /* A relay that just disappeared is treated specially when it comes back:
+     * it must rejoin as an ordinary child under the current replacement relay,
+     * not reclaim stale relay status. */
     if (node->relay_recovery_lost_relay_id != 0U &&
         member->member_id == node->relay_recovery_lost_relay_id) {
         recovery_parent = sle_team_select_online_relay(node, member->member_id);
@@ -394,6 +445,8 @@ static uint8_t sle_team_assign_parent(sle_team_node_t *node, sle_team_member_rec
     }
     if (node->relay_recovery_pending != 0U) {
         selected = sle_team_find_member_const(node, node->relay_recovery_selected_id);
+        /* While recovery is pending, one replacement relay is promoted first.
+         * Other affected members wait or become children of that relay. */
         if (member->relay_recovery_candidate != 0U &&
             selected != NULL && selected->online != 0U && selected->relay_allowed != 0U &&
             node->relay_recovery_selected_id != member->member_id) {
@@ -430,6 +483,8 @@ static uint8_t sle_team_assign_parent(sle_team_node_t *node, sle_team_member_rec
     if (direct_count < direct_cap) {
         parent_id = node->cfg.leader_id;
     } else {
+        /* Direct capacity is full: make sure at least one direct member can act
+         * as relay, then place the new member behind the best available relay. */
         if (sle_team_ensure_relay_for_overflow(node, member->member_id) == 0U) {
             member->parent_id = 0U;
             member->next_hop_id = 0U;
@@ -457,6 +512,8 @@ static void sle_team_clear_stale_join_policy(sle_team_member_record_t *member)
     member->next_hop_id = 0U;
     member->child_count = 0U;
 }
+
+/* Send the two policy packets that make a member's parent assignment concrete. */
 static int sle_team_send_member_policy(sle_team_node_t *node, sle_team_member_record_t *member, uint8_t mark_pending)
 {
     if (node == NULL || member == NULL || node->cfg.role != SLE_TEAM_ROLE_LEADER ||
@@ -466,6 +523,8 @@ static int sle_team_send_member_policy(sle_team_node_t *node, sle_team_member_re
     if (member->next_hop_id == 0U) { member->next_hop_id = member->parent_id; }
     if (mark_pending != 0U) { member->policy_pending = 1U; }
     sle_team_recompute_child_counts(node);
+    /* The route update is the actual parent decision. CONFIG follows with
+     * timing/reporting/relay permission knobs for that same member. */
     uint16_t route_seq = node->next_seq;
     int ret = sle_team_node_send_route_update(node, member->member_id, member->parent_id,
         (uint8_t)SLE_TEAM_PARENT_CONNECTED, member->next_hop_id);
@@ -477,6 +536,11 @@ static int sle_team_send_member_policy(sle_team_node_t *node, sle_team_member_re
 static uint8_t sle_team_recovery_policy_required(const sle_team_node_t *node,
     const sle_team_member_record_t *member)
 {
+    /*
+     * Live traffic from a member can reveal that its current parent/relay flag
+     * is stale. In that case the leader re-sends policy instead of accepting the
+     * member online under a broken recovery topology.
+     */
     const sle_team_member_record_t *selected;
     if (node == NULL || member == NULL || node->cfg.role != SLE_TEAM_ROLE_LEADER) { return 0U; }
     if (node->relay_recovery_lost_relay_id != 0U &&
@@ -511,6 +575,8 @@ static int sle_team_refresh_recovery_policy(sle_team_node_t *node, sle_team_memb
     was_lost_relay_child = (uint8_t)(node->relay_recovery_lost_relay_id != 0U &&
         member_id != node->relay_recovery_lost_relay_id &&
         member->parent_id == node->relay_recovery_lost_relay_id);
+    /* Keep the usable next hop if the member is already being recovered through
+     * a live relay; only stale parent authority is cleared. */
     uint8_t preserved_next_hop = (uint8_t)(node->relay_recovery_selected_id == member_id &&
         member->next_hop_id != 0U && member->next_hop_id != node->relay_recovery_lost_relay_id &&
         member->next_hop_id != member_id ? member->next_hop_id : 0U);
@@ -523,6 +589,8 @@ static int sle_team_refresh_recovery_policy(sle_team_node_t *node, sle_team_memb
     if (preserved_next_hop != 0U && member->parent_id == node->cfg.leader_id) { member->next_hop_id = preserved_next_hop; }
     return sle_team_send_member_policy(node, member, 1U);
 }
+
+/* Final confirmation point for HELLO ACK, ROUTE_UPDATE ACK, or coherent live packets. */
 static int sle_team_confirm_member_online(sle_team_node_t *node, sle_team_member_record_t *member)
 {
     uint8_t notify_joined;
@@ -558,10 +626,14 @@ static uint8_t sle_team_pending_live_packet_confirms(const sle_team_node_t *node
     if (member->next_hop_id == 0U) {
         return 0U;
     }
+    /* A heartbeat/POS packet can confirm a pending route only when it arrived
+     * through the same coherent next hop that the leader is trying to install. */
     return (uint8_t)(member->next_hop_id == member->parent_id ||
         member->next_hop_id == node->cfg.self_id ||
         member->next_hop_id == node->cfg.leader_id);
 }
+
+/* Re-send policy without destroying the existing ACK target on send failure. */
 static int sle_team_resend_member_policy(sle_team_node_t *node, sle_team_member_record_t *member, uint16_t ack_seq)
 {
     if (node == NULL || member == NULL || node->cfg.role != SLE_TEAM_ROLE_LEADER ||
@@ -577,6 +649,7 @@ static int sle_team_resend_member_policy(sle_team_node_t *node, sle_team_member_
 }
 static int sle_team_send_app(sle_team_node_t *node, uint8_t dst_id, const uint8_t *app_buf, uint16_t app_len)
 {
+    /* App packets are always wrapped into one GROUP_DATA mesh frame before TX. */
     sle_team_mesh_packet_t mesh_packet;
     uint8_t mesh_buf[SLE_TEAM_NODE_TX_BUF_SIZE];
     size_t mesh_len = 0U;
@@ -610,6 +683,7 @@ static int sle_team_send_encoded_packet(sle_team_node_t *node, uint8_t dst_id, c
 static int sle_team_build_and_send(sle_team_node_t *node, uint8_t dst_id, uint8_t msg_type,
     const uint8_t *body, uint16_t body_len)
 {
+    /* Single sequence counter per node makes ACK/pending-policy matching simple. */
     sle_team_app_packet_t app_packet;
     if (node == NULL) {
         return SLE_TEAM_ERR_ARG;
@@ -640,6 +714,8 @@ static int sle_team_forward_packet(sle_team_node_t *node, const sle_team_app_pac
         app->dst_id != node->cfg.leader_id && incoming_term < node->cfg.leader_term) {
         stale_child_hello = 1U;
     }
+    /* Relay members only forward leader<->child traffic. The stale child HELLO
+     * exception lets an old child reach the current leader for a fresh policy. */
     if (!((app->src_id == node->cfg.leader_id && app->dst_id != node->cfg.leader_id) ||
         (app->src_id != node->cfg.leader_id && app->dst_id == node->cfg.leader_id) ||
         stale_child_hello != 0U)) {
@@ -657,6 +733,7 @@ static int sle_team_forward_packet(sle_team_node_t *node, const sle_team_app_pac
 }
 static void sle_team_note_leader_packet(sle_team_node_t *node, const sle_team_app_packet_t *app)
 {
+    /* Any valid leader-origin downlink proves leader/parent liveness to a relay. */
     uint32_t now_s;
     if (node == NULL || app == NULL || node->cfg.role != SLE_TEAM_ROLE_MEMBER ||
         app->src_id != node->cfg.leader_id) {
@@ -670,6 +747,8 @@ static uint8_t sle_team_msg_can_migrate_leader(uint8_t msg_type)
 {
     return (uint8_t)(msg_type == SLE_TEAM_APP_ROUTE_UPDATE);
 }
+
+/* Clear member-local policy before accepting a newer authority/term. */
 static void sle_team_reset_member_policy_state(sle_team_node_t *node)
 {
     if (node == NULL) { return; }
@@ -695,6 +774,8 @@ static int sle_team_accept_leader_term(sle_team_node_t *node, const sle_team_app
         return SLE_TEAM_OK;
     }
     incoming_term = app->leader_term != 0U ? app->leader_term : SLE_TEAM_LEADER_TERM_DEFAULT;
+    /* Terms are not leader election here; they are a safety fence so stale
+     * packets from an old authority cannot overwrite the current policy. */
     if (app->src_id != node->cfg.leader_id) {
         if (sle_team_valid_member_id(app->src_id) != 0U &&
             (app->dst_id == node->cfg.self_id || app->dst_id == SLE_TEAM_BROADCAST_ID) &&
@@ -727,6 +808,8 @@ static uint8_t sle_team_leader_accepts_stale_hello(const sle_team_node_t *node, 
     incoming_term = app->leader_term != 0U ? app->leader_term : SLE_TEAM_LEADER_TERM_DEFAULT;
     return (uint8_t)(node->cfg.leader_term > incoming_term ? 1U : 0U);
 }
+
+/* Children of a lost relay become recovery candidates and wait for fresh policy. */
 static void sle_team_mark_relay_children_offline(sle_team_node_t *node, uint8_t relay_id)
 {
     uint8_t i;
@@ -753,6 +836,8 @@ static void sle_team_mark_relay_children_offline(sle_team_node_t *node, uint8_t 
         sle_team_log(node, "relay recovery pending");
     }
 }
+
+/* One member offline path handles both heartbeat timeout and explicit leave. */
 static void sle_team_mark_member_offline(sle_team_node_t *node, sle_team_member_record_t *member)
 {
     uint8_t was_relay;
@@ -788,6 +873,8 @@ int sle_team_node_allow_all_members(sle_team_node_t *node)
     (void)memset(node->cfg.allowed_member_ids, 0, sizeof(node->cfg.allowed_member_ids));
     return SLE_TEAM_OK;
 }
+
+/* Replace the allow-list with a de-duplicated set of valid route ids. */
 int sle_team_node_set_allowed_members(sle_team_node_t *node, const uint8_t *member_ids, uint8_t count)
 {
     uint8_t i;
@@ -853,6 +940,7 @@ int sle_team_node_remove_allowed_member(sle_team_node_t *node, uint8_t member_id
 }
 int sle_team_node_pairing_start(sle_team_node_t *node)
 {
+    /* Pairing starts from a closed allow-list and records new HELLOs as pending. */
     if (node == NULL || node->cfg.role != SLE_TEAM_ROLE_LEADER) {
         return SLE_TEAM_ERR_ARG;
     }
@@ -866,6 +954,7 @@ int sle_team_node_pairing_start(sle_team_node_t *node)
 }
 int sle_team_node_pairing_stop(sle_team_node_t *node)
 {
+    /* Stop is permissive: pending members are allowed, then filtering is opened. */
     uint8_t i;
     if (node == NULL || node->cfg.role != SLE_TEAM_ROLE_LEADER) {
         return SLE_TEAM_ERR_ARG;
@@ -887,6 +976,7 @@ int sle_team_node_pairing_approve(sle_team_node_t *node, uint8_t member_id)
 }
 int sle_team_node_pairing_approve_with_relay(sle_team_node_t *node, uint8_t member_id, uint8_t relay_allowed)
 {
+    /* Approval creates/updates a member record and immediately pushes policy if possible. */
     sle_team_member_record_t *member;
     int ret;
     if (node == NULL || node->cfg.role != SLE_TEAM_ROLE_LEADER || sle_team_valid_member_id(member_id) == 0U) {
@@ -924,6 +1014,7 @@ int sle_team_node_pairing_approve_with_relay(sle_team_node_t *node, uint8_t memb
 int sle_team_node_member_select_leader_term(sle_team_node_t *node, uint8_t team_id, uint8_t leader_id,
     uint8_t channel_hash, uint16_t leader_term)
 {
+    /* Member-side join resets local policy and starts HELLO retries toward leader. */
     uint16_t next_term;
     if (node == NULL || node->cfg.role != SLE_TEAM_ROLE_MEMBER || team_id == 0U ||
         team_id == SLE_TEAM_BROADCAST_ID || sle_team_valid_member_id(leader_id) == 0U) {
@@ -953,6 +1044,7 @@ int sle_team_node_member_select_leader(sle_team_node_t *node, uint8_t team_id, u
 }
 int sle_team_node_member_leave(sle_team_node_t *node)
 {
+    /* Explicit leave is best-effort: notify leader, then go fully idle locally. */
     sle_team_alert_body_t alert;
     uint8_t leader_id;
     int ret = SLE_TEAM_OK;
@@ -983,6 +1075,7 @@ int sle_team_node_member_leave(sle_team_node_t *node)
 }
 int sle_team_node_member_link_lost(sle_team_node_t *node)
 {
+    /* Silent parent loss keeps the leader target and resumes HELLO/policy wait. */
     if (node == NULL || node->cfg.role != SLE_TEAM_ROLE_MEMBER) {
         return SLE_TEAM_ERR_ARG;
     }
@@ -1001,6 +1094,7 @@ int sle_team_node_member_link_lost(sle_team_node_t *node)
 }
 int sle_team_node_member_offline(sle_team_node_t *node, uint8_t member_id)
 {
+    /* External transport tells the leader a direct member disappeared. */
     sle_team_member_record_t *member;
     if (node == NULL || node->cfg.role != SLE_TEAM_ROLE_LEADER || sle_team_valid_member_id(member_id) == 0U) {
         return SLE_TEAM_ERR_ARG;
@@ -1017,6 +1111,13 @@ int sle_team_node_member_offline(sle_team_node_t *node, uint8_t member_id)
 }
 static int sle_team_handle_hello(sle_team_node_t *node, const sle_team_app_packet_t *app)
 {
+    /*
+     * Leader HELLO handling:
+     *   1. enforce firmware/allow-list;
+     *   2. record pending members during pairing;
+     *   3. keep proven policy when safe;
+     *   4. otherwise assign parent and send fresh policy.
+     */
     sle_team_hello_body_t hello;
     sle_team_member_record_t *member;
     sle_team_member_record_t old_policy;
@@ -1033,6 +1134,8 @@ static int sle_team_handle_hello(sle_team_node_t *node, const sle_team_app_packe
     }
     (void)memcpy(&hello, app->body, sizeof(hello));
     hello_fw_compat = (uint16_t)(((uint16_t)hello.fw_compat_hi << 8U) | hello.fw_compat_lo);
+    /* Firmware compatibility is enforced at HELLO as well as scan time. This
+     * protects the group if an old image slips past advertising filters. */
     if (node->cfg.fw_compat != SLE_TEAM_FW_COMPAT_ANY && hello_fw_compat != node->cfg.fw_compat) {
         return SLE_TEAM_ERR_UNSUPPORTED;
     }
@@ -1077,6 +1180,8 @@ static int sle_team_handle_hello(sle_team_node_t *node, const sle_team_app_packe
     member->online = 0U;
     sle_team_clear_stale_join_policy(member);
     if (sle_team_assign_parent(node, member) == 0U) { return SLE_TEAM_OK; }
+    /* If the HELLO came through a relay and the member would otherwise be
+     * leader-direct, prefer that ingress relay as the real parent. */
     if (member->parent_id == node->cfg.leader_id &&
         sle_team_ingress_relay_can_parent(node, node->rx_ingress_relay_id, member->member_id) != 0U) {
         member->parent_id = node->rx_ingress_relay_id;
@@ -1093,6 +1198,7 @@ static int sle_team_handle_hello(sle_team_node_t *node, const sle_team_app_packe
 }
 static int sle_team_handle_ack(sle_team_node_t *node, const sle_team_app_packet_t *app)
 {
+    /* ACK clears pending policy only when it matches the currently expected seq. */
     sle_team_ack_body_t ack;
     if (node == NULL || app == NULL || app->body_len < sizeof(ack)) {
         return SLE_TEAM_ERR_FORMAT;
@@ -1127,6 +1233,7 @@ static int sle_team_handle_ack(sle_team_node_t *node, const sle_team_app_packet_
 }
 static int sle_team_handle_config(sle_team_node_t *node, const sle_team_app_packet_t *app)
 {
+    /* Members apply leader timing and relay permission here; parent is separate. */
     sle_team_config_body_t cfg_body;
     if (node == NULL || app == NULL || app->body_len < sizeof(cfg_body)) {
         return SLE_TEAM_ERR_FORMAT;
@@ -1150,6 +1257,7 @@ static int sle_team_handle_config(sle_team_node_t *node, const sle_team_app_pack
 }
 static int sle_team_handle_route_update(sle_team_node_t *node, const sle_team_app_packet_t *app)
 {
+    /* ROUTE_UPDATE is the member's authoritative parent assignment. */
     sle_team_route_update_body_t route_update;
     uint8_t notify_joined;
     uint32_t now_s;
@@ -1164,6 +1272,8 @@ static int sle_team_handle_route_update(sle_team_node_t *node, const sle_team_ap
         return SLE_TEAM_ERR_FORMAT;
     }
     if (node->upstream_parent_id != 0U && node->upstream_parent_id != route_update.parent_id) {
+        /* Parent change is a real topology change. Mark not joined until the
+         * new parent path proves itself with ACK/heartbeat traffic. */
         node->joined = 0U;
         node->state = SLE_TEAM_NET_WAIT_POLICY;
         node->last_hello_s = 0U;
@@ -1201,6 +1311,7 @@ static int sle_team_handle_route_update(sle_team_node_t *node, const sle_team_ap
 }
 static int sle_team_handle_heartbeat(sle_team_node_t *node, const sle_team_app_packet_t *app)
 {
+    /* Heartbeats are liveness evidence and can also confirm a pending policy. */
     sle_team_heartbeat_body_t hb;
     sle_team_member_record_t *member;
     if (node == NULL || app == NULL || app->body_len < sizeof(hb)) {
@@ -1239,6 +1350,7 @@ static int sle_team_handle_heartbeat(sle_team_node_t *node, const sle_team_app_p
 }
 static int sle_team_handle_position(sle_team_node_t *node, const sle_team_app_packet_t *app)
 {
+    /* Leader keeps last-known member position even if the member later drops. */
     sle_team_pos_body_t pos;
     sle_team_member_record_t *member;
     if (node == NULL || app == NULL || app->body_len < sizeof(pos)) {
@@ -1277,6 +1389,7 @@ static int sle_team_handle_position(sle_team_node_t *node, const sle_team_app_pa
 }
 static int sle_team_handle_alert(sle_team_node_t *node, const sle_team_app_packet_t *app)
 {
+    /* Leave alerts reuse the same offline path as timeout so relay children recover. */
     sle_team_alert_body_t alert;
     sle_team_member_record_t *member;
     if (node == NULL || app == NULL || app->body_len < sizeof(alert)) {
@@ -1296,6 +1409,7 @@ static int sle_team_handle_alert(sle_team_node_t *node, const sle_team_app_packe
 }
 int sle_team_node_init(sle_team_node_t *node, const sle_team_node_cfg_t *cfg, const sle_team_node_ops_t *ops)
 {
+    /* Initialize one logical node instance with its fixed identity and runtime callbacks. */
     if (node == NULL || cfg == NULL || ops == NULL || ops->send == NULL) {
         return SLE_TEAM_ERR_ARG;
     }
@@ -1337,6 +1451,8 @@ void sle_team_node_tick(sle_team_node_t *node)
         return;
     }
     now_s = sle_team_now(node);
+    /* tick() is the portable scheduler: leaders time out stale records and
+     * send keepalives; members send HELLO until policy arrives, then heartbeat. */
     leader_heartbeat_due = (uint8_t)(node->cfg.heartbeat_interval_s != 0U &&
         (node->last_heartbeat_s == 0U ||
         (uint32_t)(now_s - node->last_heartbeat_s) >= node->cfg.heartbeat_interval_s));
@@ -1392,6 +1508,7 @@ void sle_team_node_tick(sle_team_node_t *node)
 }
 int sle_team_node_on_packet(sle_team_node_t *node, const uint8_t *buf, size_t buf_len)
 {
+    /* Ingress path: unwrap transport, validate authority, then dispatch by app message type. */
     sle_team_mesh_packet_t mesh_packet;
     sle_team_app_packet_t app_packet;
     const uint8_t *app_payload = NULL;
@@ -1417,6 +1534,8 @@ int sle_team_node_on_packet(sle_team_node_t *node, const uint8_t *buf, size_t bu
     if (app_packet.team_id != node->cfg.team_id) {
         return SLE_TEAM_ERR_UNSUPPORTED;
     }
+    /* Decode order matters: reject wrong team/term before forwarding or
+     * applying state changes, then let members relay packets not addressed to them. */
     ret = sle_team_accept_leader_term(node, &app_packet);
     if (ret != SLE_TEAM_OK) {
         return ret;
@@ -1451,6 +1570,7 @@ int sle_team_node_on_packet(sle_team_node_t *node, const uint8_t *buf, size_t bu
 }
 int sle_team_node_send_hello(sle_team_node_t *node, uint8_t dst_id)
 {
+    /* HELLO advertises identity plus firmware compatibility. */
     sle_team_hello_body_t hello;
     if (node == NULL) {
         return SLE_TEAM_ERR_ARG;
@@ -1468,6 +1588,7 @@ int sle_team_node_send_hello(sle_team_node_t *node, uint8_t dst_id)
 int sle_team_node_send_heartbeat(sle_team_node_t *node, uint8_t dst_id, uint8_t battery_percent,
     int8_t rssi_dbm, uint8_t fix_status)
 {
+    /* Heartbeat carries liveness, battery, and a tiny telemetry sample. */
     sle_team_heartbeat_body_t hb;
     if (node == NULL) {
         return SLE_TEAM_ERR_ARG;
@@ -1484,6 +1605,7 @@ static int sle_team_send_leader_heartbeat(sle_team_node_t *node, uint8_t member_
 }
 int sle_team_node_send_position(sle_team_node_t *node, uint8_t dst_id, const sle_team_pos_body_t *pos)
 {
+    /* Position is raw telemetry, usually from GPS or a fallback source. */
     if (node == NULL || pos == NULL) {
         return SLE_TEAM_ERR_ARG;
     }
@@ -1491,6 +1613,7 @@ int sle_team_node_send_position(sle_team_node_t *node, uint8_t dst_id, const sle
 }
 int sle_team_node_send_alert(sle_team_node_t *node, uint8_t dst_id, const sle_team_alert_body_t *alert)
 {
+    /* Alert is used for leave/lost notifications and last-known position handoff. */
     if (node == NULL || alert == NULL) {
         return SLE_TEAM_ERR_ARG;
     }
@@ -1498,6 +1621,7 @@ int sle_team_node_send_alert(sle_team_node_t *node, uint8_t dst_id, const sle_te
 }
 int sle_team_node_send_config(sle_team_node_t *node, uint8_t dst_id)
 {
+    /* CONFIG carries timing and relay permission knobs for the chosen parent. */
     sle_team_config_body_t cfg_body;
     const sle_team_member_record_t *member;
     if (node == NULL) {
@@ -1526,6 +1650,7 @@ int sle_team_node_send_config(sle_team_node_t *node, uint8_t dst_id)
 int sle_team_node_send_ack(sle_team_node_t *node, uint8_t dst_id, uint16_t ack_seq, uint8_t acked_msg_type,
     uint8_t status_code)
 {
+    /* ACK tags the policy or hello sequence that the receiver should consider settled. */
     sle_team_ack_body_t ack;
     if (node == NULL) {
         return SLE_TEAM_ERR_ARG;
@@ -1538,6 +1663,7 @@ int sle_team_node_send_ack(sle_team_node_t *node, uint8_t dst_id, uint16_t ack_s
 int sle_team_node_send_route_update(sle_team_node_t *node, uint8_t dst_id, uint8_t parent_id,
     uint8_t parent_state, uint8_t next_hop_id)
 {
+    /* ROUTE_UPDATE says who the parent is and whether the path is ready. */
     sle_team_route_update_body_t update;
     const sle_team_member_record_t *member;
     if (node == NULL) {

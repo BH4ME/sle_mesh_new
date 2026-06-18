@@ -10,17 +10,27 @@
 extern "C" {
 #endif
 
+/*
+ * Portable team-node state machine.
+ *
+ * This file has no WS63 driver dependency. The board app provides time,
+ * RSSI, battery and packet-send callbacks through sle_team_node_ops_t, while
+ * this core owns membership policy, parent assignment, relay recovery, and
+ * packet-level state transitions.
+ */
 #define SLE_TEAM_MAX_LOGICAL_MEMBERS 30U
 #define SLE_TEAM_MAX_DIRECT_CONNECTIONS 8U
 #define SLE_TEAM_MAX_MEMBERS SLE_TEAM_MAX_LOGICAL_MEMBERS
 #define SLE_TEAM_NODE_TX_BUF_SIZE 256U
 #define SLE_TEAM_BROADCAST_ID 0xFFU
 
+/* Configured protocol role: one leader controls policy; members follow it. */
 typedef enum {
     SLE_TEAM_ROLE_MEMBER = 0,
     SLE_TEAM_ROLE_LEADER = 1,
 } sle_team_node_role_t;
 
+/* High-level join state for the local node. */
 typedef enum {
     SLE_TEAM_NET_IDLE = 0,
     SLE_TEAM_NET_WAIT_POLICY = 1,
@@ -28,17 +38,26 @@ typedef enum {
     SLE_TEAM_NET_ONLINE = 3,
 } sle_team_network_state_t;
 
+/* Member-side view of its upstream parent link. */
 typedef enum {
     SLE_TEAM_PARENT_IDLE = 0,
     SLE_TEAM_PARENT_WAIT_POLICY = 1,
     SLE_TEAM_PARENT_CONNECTED = 2,
 } sle_team_parent_state_t;
 
+/* Core send intent. The WS63 adapter maps this to physical direct/group TX. */
 typedef enum {
     SLE_TEAM_SEND_UNICAST = 0,
     SLE_TEAM_SEND_GROUP = 1,
 } sle_team_send_kind_t;
 
+/*
+ * Leader-side record for a logical member.
+ *
+ * The table keeps policy and last-known telemetry even when a member is
+ * temporarily offline. That is why position_valid and the last location fields
+ * are not cleared just because online becomes 0.
+ */
 typedef struct {
     uint8_t member_id;
     uint8_t role;
@@ -67,6 +86,7 @@ typedef struct {
     uint32_t last_seen_s;
 } sle_team_member_record_t;
 
+/* HELLOs seen while pairing/member filtering is active wait here for approval. */
 typedef struct {
     uint8_t member_id;
     uint8_t role;
@@ -79,6 +99,7 @@ typedef struct {
 
 typedef struct sle_team_node sle_team_node_t;
 
+/* Board/platform callbacks used by the portable core. */
 typedef int (*sle_team_send_fn)(void *user_ctx, sle_team_send_kind_t kind, uint8_t dst_id,
     const uint8_t *buf, uint16_t len);
 typedef uint32_t (*sle_team_now_fn)(void *user_ctx);
@@ -93,6 +114,13 @@ typedef void (*sle_team_relay_offline_cb)(void *user_ctx, uint8_t member_id);
 typedef uint8_t (*sle_team_member_timeout_defer_cb)(void *user_ctx, uint8_t member_id,
     uint32_t now_s, uint32_t last_seen_s);
 
+/*
+ * Optional hooks into the board app.
+ *
+ * The core changes its own state before calling these hooks; app code should
+ * treat them as notifications for logs, LEDs, displays, HTTP events, or relay
+ * scan nudges.
+ */
 typedef struct {
     sle_team_send_fn send;
     sle_team_now_fn now_s;
@@ -107,6 +135,13 @@ typedef struct {
     void *user_ctx;
 } sle_team_node_ops_t;
 
+/*
+ * Static and runtime policy for one local node.
+ *
+ * team_id/channel_hash separate groups, leader_term fences stale policy, and
+ * fw_compat enforces the same-proof-line firmware gate. Relay fields describe
+ * what this node is allowed to do; the leader still decides the final parent.
+ */
 typedef struct {
     uint8_t team_id;
     uint8_t self_id;
@@ -135,6 +170,14 @@ typedef struct {
     uint16_t parent_timeout_s;
 } sle_team_node_cfg_t;
 
+/*
+ * Full runtime state.
+ *
+ * The leader primarily uses members[] and pending_members[]. A member primarily
+ * uses joined/upstream_parent_id/upstream_parent_state plus the leader liveness
+ * timers. Relay recovery fields remember a lost relay until a replacement path
+ * is confirmed and the old relay returns as an ordinary child.
+ */
 struct sle_team_node {
     sle_team_node_cfg_t cfg;
     sle_team_node_ops_t ops;
@@ -156,10 +199,12 @@ struct sle_team_node {
     sle_team_pending_member_t pending_members[SLE_TEAM_MAX_MEMBERS];
 };
 
+/* Lifecycle and packet ingress. Call tick() regularly from the board task. */
 int sle_team_node_init(sle_team_node_t *node, const sle_team_node_cfg_t *cfg, const sle_team_node_ops_t *ops);
 void sle_team_node_tick(sle_team_node_t *node);
 int sle_team_node_on_packet(sle_team_node_t *node, const uint8_t *buf, size_t buf_len);
 
+/* Packet builders with state updates around them. */
 int sle_team_node_send_hello(sle_team_node_t *node, uint8_t dst_id);
 int sle_team_node_send_heartbeat(sle_team_node_t *node, uint8_t dst_id, uint8_t battery_percent,
     int8_t rssi_dbm, uint8_t fix_status);
@@ -172,6 +217,7 @@ int sle_team_node_send_ack(sle_team_node_t *node, uint8_t dst_id, uint16_t ack_s
 int sle_team_node_send_route_update(sle_team_node_t *node, uint8_t dst_id, uint8_t parent_id,
     uint8_t parent_state, uint8_t next_hop_id);
 
+/* Leader membership, pairing, and relay-policy control helpers. */
 const sle_team_member_record_t *sle_team_node_find_member(const sle_team_node_t *node, uint8_t member_id);
 uint8_t sle_team_node_is_member_allowed(const sle_team_node_t *node, uint8_t member_id);
 int sle_team_node_allow_all_members(sle_team_node_t *node);
@@ -183,6 +229,7 @@ int sle_team_node_pairing_stop(sle_team_node_t *node);
 int sle_team_node_pairing_approve(sle_team_node_t *node, uint8_t member_id);
 int sle_team_node_pairing_approve_with_relay(sle_team_node_t *node, uint8_t member_id, uint8_t relay_allowed);
 int sle_team_node_grant_relay(sle_team_node_t *node, uint8_t member_id);
+/* Member-side commands used by CLI/runtime role control. */
 int sle_team_node_member_select_leader(sle_team_node_t *node, uint8_t team_id, uint8_t leader_id,
     uint8_t channel_hash);
 int sle_team_node_member_select_leader_term(sle_team_node_t *node, uint8_t team_id, uint8_t leader_id,

@@ -11,6 +11,7 @@ typedef struct {
     int truncated;
 } sle_team_json_writer_t;
 
+/* Append-only JSON writer. Once truncated, later appends become no-ops. */
 static void json_append(sle_team_json_writer_t *writer, const char *fmt, ...)
 {
     va_list ap;
@@ -36,6 +37,7 @@ static void json_append(sle_team_json_writer_t *writer, const char *fmt, ...)
     writer->used += (size_t)written;
 }
 
+/* Escape only what the JSON/event summaries can contain on the MCU. */
 static void json_append_escaped(sle_team_json_writer_t *writer, const char *text)
 {
     const unsigned char *p;
@@ -72,6 +74,7 @@ static void json_append_escaped(sle_team_json_writer_t *writer, const char *text
     json_append(writer, "\"");
 }
 
+/* Web UI shows both full MAC and a short suffix label when the MAC is known. */
 static void json_append_mac_fields(sle_team_json_writer_t *writer, const uint8_t mac[6], uint8_t mac_ready)
 {
     if (mac_ready == 0U || mac == NULL) {
@@ -147,6 +150,7 @@ void sle_team_web_event_log_init(sle_team_web_event_log_t *log)
     log->next_id = 1U;
 }
 
+/* Push newest event into a small ring; readers walk backward from head. */
 void sle_team_web_event_push(sle_team_web_event_log_t *log, uint32_t time_s,
     sle_team_web_event_direction_t direction, uint8_t app_msg_type, uint8_t src_id, uint8_t dst_id, uint16_t seq,
     const char *summary)
@@ -189,6 +193,7 @@ int sle_team_web_write_status_json(const sle_team_node_t *node, uint32_t uptime_
     writer.truncated = 0;
     out[0] = '\0';
 
+    /* Status is the local node summary plus pairing/member-filter controls. */
     json_append(&writer,
         "{\"teamId\":%u,\"selfId\":%u,\"leaderId\":%u,",
         node->cfg.team_id, node->cfg.self_id, node->cfg.leader_id);
@@ -234,6 +239,7 @@ int sle_team_web_write_pending_json(const sle_team_node_t *node, char *out, size
     out[0] = '\0';
 
     json_append(&writer, "[");
+    /* Pending entries are HELLOs waiting for pairing approval. */
     for (i = 0U; i < SLE_TEAM_MAX_MEMBERS; i++) {
         const sle_team_pending_member_t *member = &node->pending_members[i];
         if (member->active == 0U) {
@@ -271,6 +277,10 @@ int sle_team_web_write_nodes_json(const sle_team_node_t *node, char *out, size_t
     out[0] = '\0';
 
     json_append(&writer, "[");
+    /*
+     * Keep offline records in the JSON if they still have pending policy or a
+     * last-known position. The Web UI needs that to show lost nodes on the map.
+     */
     for (i = 0U; i < SLE_TEAM_MAX_MEMBERS; i++) {
         const sle_team_member_record_t *member = &node->members[i];
         if (member->online == 0U && member->policy_pending == 0U && member->position_valid == 0U) {
@@ -323,6 +333,7 @@ int sle_team_web_write_events_json(const sle_team_web_event_log_t *log, char *ou
     out[0] = '\0';
 
     json_append(&writer, "[");
+    /* Newest first: the UI can render the log without sorting on the browser. */
     for (i = 0U; i < log->count; i++) {
         uint8_t index = (uint8_t)((log->head + SLE_TEAM_WEB_EVENT_COUNT - 1U - i) % SLE_TEAM_WEB_EVENT_COUNT);
         const sle_team_web_event_t *event = &log->events[index];

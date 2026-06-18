@@ -45,6 +45,13 @@ static uint8_t g_sle_uart_local_addr[SLE_ADDR_LEN] = { 0x01, 0x02, 0x03, 0x04, 0
 static uint8_t g_sle_uart_route_id = 0U;
 static uint16_t g_sle_uart_fw_compat = SLE_TEAM_ADV_FW_COMPAT_ANY;
 static sle_announce_seek_callbacks_t g_sle_uart_announce_seek_cbks = {0};
+
+/*
+ * Advertising payload for the fixed WS63 mesh profile.
+ *
+ * The scanner uses this metadata to find the server, identify the route ID,
+ * and reject incompatible firmware before spending connection attempts.
+ */
 #define SLE_SERVER_INIT_DELAY_MS    1000
 #define sample_at_log_print(fmt, args...) osal_printk(fmt, ##args)
 #define SLE_UART_SERVER_LOG "[sle uart server]"
@@ -54,6 +61,7 @@ void sle_uart_server_adv_set_local_addr(const uint8_t addr[SLE_ADDR_LEN])
     if (addr == NULL) {
         return;
     }
+    /* Seed the advertiser's own address so peers can report a stable route label. */
     (void)memcpy_s(g_sle_uart_local_addr, sizeof(g_sle_uart_local_addr), addr, SLE_ADDR_LEN);
 }
 
@@ -63,11 +71,13 @@ void sle_uart_server_adv_set_route_id(uint8_t route_id)
         g_sle_uart_route_id = 0U;
         return;
     }
+    /* Route ID is carried in advertising so the scanner can pre-label peers. */
     g_sle_uart_route_id = route_id;
 }
 
 void sle_uart_server_adv_set_fw_compat(uint16_t fw_compat)
 {
+    /* 16-bit compatibility fingerprint is the same-firmware gate advertised on-air. */
     g_sle_uart_fw_compat = fw_compat;
 }
 
@@ -78,6 +88,7 @@ static uint16_t sle_set_adv_local_name(uint8_t *adv_data, uint16_t max_len)
 
     uint8_t *local_name = sle_local_name;
     uint8_t local_name_len = sizeof(sle_local_name) - 1;
+    /* Local name remains short because the route/fingerprint fields matter more. */
     sample_at_log_print("%s local_name_len = %d\r\n", SLE_UART_SERVER_LOG, local_name_len);
     sample_at_log_print("%s local_name: ", SLE_UART_SERVER_LOG);
     for (uint8_t i = 0; i < local_name_len; i++) {
@@ -99,6 +110,7 @@ static uint16_t sle_set_adv_route_hint(uint8_t *adv_data, uint16_t max_len)
     if (adv_data == NULL || max_len < 7U || g_sle_uart_route_id == 0U) {
         return 0U;
     }
+    /* Manufacturer data carries the route ID and proof-line fingerprint. */
     adv_data[0] = 6U;
     adv_data[1] = SLE_ADV_DATA_TYPE_MANUFACTURER_SPECIFIC_DATA;
     adv_data[2] = SLE_TEAM_ADV_ROUTE_MAGIC_0;
@@ -121,6 +133,7 @@ static uint16_t sle_set_adv_data(uint8_t *adv_data)
         .type = SLE_ADV_DATA_TYPE_DISCOVERY_LEVEL,
         .value = SLE_ANNOUNCE_LEVEL_NORMAL,
     };
+    /* Announce as a normal discoverable device. */
     ret = memcpy_s(&adv_data[idx], SLE_ADV_DATA_LEN_MAX - idx, &adv_disc_level, len);
     if (ret != EOK) {
         sample_at_log_print("%s adv_disc_level memcpy fail\r\n", SLE_UART_SERVER_LOG);
@@ -134,6 +147,7 @@ static uint16_t sle_set_adv_data(uint8_t *adv_data)
         .type = SLE_ADV_DATA_TYPE_ACCESS_MODE,
         .value = 0,
     };
+    /* Leave access mode open so the mesh can build connections directly. */
     ret = memcpy_s(&adv_data[idx], SLE_ADV_DATA_LEN_MAX - idx, &adv_access_mode, len);
     if (ret != EOK) {
         sample_at_log_print("%s adv_access_mode memcpy fail\r\n", SLE_UART_SERVER_LOG);
@@ -155,6 +169,7 @@ static uint16_t sle_set_scan_response_data(uint8_t *scan_rsp_data)
         .type = SLE_ADV_DATA_TYPE_TX_POWER_LEVEL,
         .value = SLE_ADV_TX_POWER_DBM,
     };
+    /* Scan response adds TX power, route hint, and name. */
     ret = memcpy_s(scan_rsp_data, SLE_ADV_DATA_LEN_MAX, &tx_power_level, scan_rsp_data_len);
     if (ret != EOK) {
         sample_at_log_print("%s sle scan response data memcpy fail\r\n", SLE_UART_SERVER_LOG);
@@ -187,6 +202,7 @@ static int sle_set_default_announce_param(void)
     param.conn_supervision_timeout = SLE_CONN_SUPERVISION_TIMEOUT_DEFAULT;
     param.announce_tx_power = SLE_ADV_TX_POWER_DBM;
     param.own_addr.type = 0;
+    /* Own address is copied into the announce params so the radio can advertise it. */
     ret = memcpy_s(param.own_addr.addr, SLE_ADDR_LEN, g_sle_uart_local_addr, SLE_ADDR_LEN);
     if (ret != EOK) {
         sample_at_log_print("%s sle_set_default_announce_param data memcpy fail\r\n", SLE_UART_SERVER_LOG);
@@ -215,6 +231,7 @@ static int sle_set_default_announce_data(void)
     data.announce_data = announce_data;
     data.announce_data_len = announce_data_len;
 
+    /* The scan response is where peers learn the route hint and local name. */
     sample_at_log_print("%s data.announce_data_len = %d\r\n", SLE_UART_SERVER_LOG, data.announce_data_len);
     sample_at_log_print("%s data.announce_data: ", SLE_UART_SERVER_LOG);
     for (data_index = 0; data_index<data.announce_data_len; data_index++) {
@@ -244,6 +261,7 @@ static int sle_set_default_announce_data(void)
 
 static void sle_announce_enable_cbk(uint32_t announce_id, errcode_t status)
 {
+    /* Advertise enable/disable callbacks are mostly for bring-up diagnostics. */
     sample_at_log_print("%s sle announce enable callback id:%02x, state:%x\r\n", SLE_UART_SERVER_LOG, announce_id,
         status);
 }
@@ -267,6 +285,7 @@ errcode_t sle_uart_announce_seek_merge_cbks(const sle_announce_seek_callbacks_t 
     if (cbks == NULL) {
         return ERRCODE_SLE_FAIL;
     }
+    /* Merge preserves server callbacks while letting the client inject seek hooks. */
     merged_cbks = g_sle_uart_announce_seek_cbks;
     if (cbks->sle_enable_cb != NULL) {
         merged_cbks.sle_enable_cb = cbks->sle_enable_cb;
@@ -315,6 +334,8 @@ errcode_t sle_uart_announce_register_cbks(void)
 errcode_t sle_uart_server_adv_init(void)
 {
     errcode_t ret;
+
+    /* Start advertising only after the payload, name, and route metadata are ready. */
     sle_set_default_announce_param();
     sle_set_default_announce_data();
     ret = sle_start_announce(SLE_ADV_HANDLE_DEFAULT);
@@ -329,6 +350,7 @@ errcode_t sle_uart_server_adv_restart(void)
 {
     errcode_t ret;
 
+    /* Simple restart is enough because the payload is rebuilt from current globals. */
     (void)sle_stop_announce(SLE_ADV_HANDLE_DEFAULT);
     ret = sle_start_announce(SLE_ADV_HANDLE_DEFAULT);
     if (ret != ERRCODE_SLE_SUCCESS) {

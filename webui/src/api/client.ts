@@ -469,6 +469,15 @@ function defaultConfigStatus(): DeviceConfigStatus {
     runtimeJoined: 0,
     runtimeParent: 0,
     runtimeRelayEnabled: 0,
+    roleRequestPending: false,
+    roleRequestRole: "none",
+    roleRequestRoleValue: 255,
+    roleRequestTeam: 0,
+    roleRequestChannel: 0,
+    roleRequestLeader: 0,
+    roleRequestLeaderSuffix: "0000",
+    roleRequestLeaderTerm: 0,
+    roleRequestLastRet: 0,
     lastRoleRet: 0,
   };
 }
@@ -524,6 +533,15 @@ function normalizeConfigStatus(value: unknown): DeviceConfigStatus {
     runtimeJoined: numberField("runtimeJoined"),
     runtimeParent: numberField("runtimeParent"),
     runtimeRelayEnabled: numberField("runtimeRelayEnabled"),
+    roleRequestPending: booleanField("roleRequestPending"),
+    roleRequestRole: roleField("roleRequestRole"),
+    roleRequestRoleValue: numberField("roleRequestRoleValue"),
+    roleRequestTeam: numberField("roleRequestTeam"),
+    roleRequestChannel: numberField("roleRequestChannel"),
+    roleRequestLeader: numberField("roleRequestLeader"),
+    roleRequestLeaderSuffix: normalizeSuffix(input.roleRequestLeaderSuffix),
+    roleRequestLeaderTerm: numberField("roleRequestLeaderTerm"),
+    roleRequestLastRet: numberField("roleRequestLastRet"),
     lastRoleRet: numberField("lastRoleRet"),
   };
 }
@@ -570,12 +588,21 @@ function configCommandToCli(command: DeviceConfigCommand): string {
 function configStatusToUnconfiguredStatus(config: DeviceConfigStatus): UnconfiguredStatus {
   return {
     configured: false,
-    selfLabel: `WS63-${config.selfSuffix}`,
+    selfLabel: `SLE-${config.selfSuffix}`,
     routeId: config.routeId,
     macReady: config.selfSuffix !== "0000",
     macSuffix: config.selfSuffix,
     ssid: "serial",
     transport: "serial",
+    roleRequestPending: config.roleRequestPending,
+    roleRequestRole: config.roleRequestRole,
+    roleRequestRoleValue: config.roleRequestRoleValue,
+    roleRequestTeam: config.roleRequestTeam,
+    roleRequestChannel: config.roleRequestChannel,
+    roleRequestLeader: config.roleRequestLeader,
+    roleRequestLeaderSuffix: config.roleRequestLeaderSuffix,
+    roleRequestLeaderTerm: config.roleRequestLeaderTerm,
+    roleRequestLastRet: config.roleRequestLastRet,
   };
 }
 
@@ -585,7 +612,7 @@ function configStatusToRuntimeStatus(config: DeviceConfigStatus): TeamStatus | U
   }
   return {
     configured: true,
-    selfLabel: `WS63-${config.selfSuffix}`,
+    selfLabel: `SLE-${config.selfSuffix}`,
     routeId: config.routeId,
     macSuffix: config.selfSuffix,
     teamId: config.runtimeTeam,

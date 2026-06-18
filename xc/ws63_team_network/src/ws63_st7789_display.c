@@ -13,6 +13,13 @@
 #include "spi.h"
 #include "tcxo.h"
 
+/*
+ * ST7789 + LVGL board display.
+ *
+ * The network task only publishes compact snapshots/events; this file owns the
+ * actual panel init, LVGL object tree, and refresh timing. When LVGL is not
+ * available, the built-in text renderer still shows the same information.
+ */
 #if defined(__GNUC__)
 #define ST7789_UNUSED_FUNC __attribute__((unused))
 #else
@@ -73,7 +80,6 @@
 #define ST7789_COLOR_BLACK 0x0000U
 #define ST7789_COLOR_WHITE 0xFFFFU
 #define ST7789_COLOR_RED 0xF800U
-#define ST7789_COLOR_GREEN 0x07E0U
 #define ST7789_COLOR_YELLOW 0xFFE0U
 #define ST7789_COLOR_CYAN 0x07FFU
 #define ST7789_COLOR_ORANGE 0xFD20U
@@ -91,6 +97,8 @@
 static ws63_st7789_config_t g_st7789_cfg;
 static uint8_t g_st7789_ready;
 static uint32_t g_st7789_last_tick_ms;
+
+/* Last rendered status is cached so repeated network ticks do not repaint. */
 static uint8_t g_st7789_status_cache_valid;
 static uint8_t g_st7789_last_online_count;
 static uint8_t g_st7789_last_offline_count;
@@ -138,12 +146,13 @@ static const char *st7789_event_name(uint8_t event)
     }
 }
 
+/* One color table per event class keeps the screen readable at a glance. */
 static uint16_t st7789_event_color565(uint8_t event)
 {
     switch (event) {
         case WS63_ST7789_EVENT_JOIN:
         case WS63_ST7789_EVENT_REJOIN:
-            return ST7789_COLOR_GREEN;
+            return ST7789_COLOR_CYAN;
         case WS63_ST7789_EVENT_LEFT:
             return ST7789_COLOR_ORANGE;
         case WS63_ST7789_EVENT_TIMEOUT:
@@ -154,6 +163,7 @@ static uint16_t st7789_event_color565(uint8_t event)
     }
 }
 
+/* Short hint text is shown below the event name on the display. */
 static const char *st7789_event_hint(uint8_t event)
 {
     switch (event) {
@@ -173,12 +183,13 @@ static const char *st7789_event_hint(uint8_t event)
 }
 
 #if SLE_TEAM_USE_LVGL_BACKEND
+/* LVGL backend uses richer colors and the same event classification. */
 static uint32_t st7789_event_color_hex(uint8_t event)
 {
     switch (event) {
         case WS63_ST7789_EVENT_JOIN:
         case WS63_ST7789_EVENT_REJOIN:
-            return 0x22C55E;
+            return 0x38BDF8;
         case WS63_ST7789_EVENT_LEFT:
             return 0xF97316;
         case WS63_ST7789_EVENT_TIMEOUT:
@@ -189,6 +200,7 @@ static uint32_t st7789_event_color_hex(uint8_t event)
     }
 }
 
+/* Shared LVGL panel style used by both status and event cards. */
 static void st7789_lvgl_style_panel(lv_obj_t *obj, uint32_t bg, uint32_t border)
 {
     if (obj == NULL) {
@@ -216,6 +228,7 @@ static void st7789_lvgl_style_rail(lv_obj_t *obj, uint32_t color)
     lv_obj_set_style_border_width(obj, 0, LV_PART_MAIN);
 }
 
+/* Labels are width-constrained so long member labels do not overflow. */
 static void st7789_lvgl_config_label(lv_obj_t *label, uint16_t width, uint32_t color)
 {
     if (label == NULL) {
@@ -330,6 +343,7 @@ static const uint8_t g_st7789_font6x8[][6] = {
 static void st7789_cs(uint8_t selected)
 {
 #if CONFIG_SLE_TEAM_ST7789_CS_ALWAYS_LOW
+    /* The current FPC wiring is validated with CS held low after boot. */
     (void)selected;
     (void)uapi_gpio_set_val(g_st7789_cfg.cs_pin, GPIO_LEVEL_LOW);
 #else
@@ -343,6 +357,11 @@ static void st7789_dc(uint8_t data)
 }
 
 #if ST7789_SOFT_SPI_ENABLE
+/*
+ * The validated v4.5 display path bit-bangs SPI over GPIO. That avoids SDK SPI
+ * mode/pinmux surprises while keeping the display task independent of network
+ * timing. The hardware-SPI path below is left available for future boards.
+ */
 static void st7789_sclk(uint8_t high)
 {
     (void)uapi_gpio_set_val(g_st7789_cfg.sclk_pin, high != 0U ? GPIO_LEVEL_HIGH : GPIO_LEVEL_LOW);
@@ -410,6 +429,7 @@ static int st7789_write(const uint8_t *buf, uint32_t len)
         return -1;
     }
 #if ST7789_SOFT_SPI_ENABLE
+    /* DC is selected by the caller; this helper only pushes bytes. */
     st7789_cs(1U);
     for (i = 0U; i < len; i++) {
         st7789_soft_spi_write_u8(buf[i]);
@@ -429,12 +449,14 @@ static int st7789_write(const uint8_t *buf, uint32_t len)
 
 static int st7789_cmd(uint8_t cmd)
 {
+    /* ST7789 command phase: DC low, then one command byte. */
     st7789_dc(0U);
     return st7789_write(&cmd, 1U);
 }
 
 static int st7789_data(const uint8_t *buf, uint32_t len)
 {
+    /* ST7789 data phase: DC high, then payload bytes. */
     st7789_dc(1U);
     return st7789_write(buf, len);
 }
@@ -461,6 +483,7 @@ static void st7789_set_view_config(uint8_t madctl, uint16_t x_off, uint16_t y_of
 
 static void st7789_set_view_config(uint8_t madctl, uint16_t x_off, uint16_t y_off)
 {
+    /* Debug helper for trying rotation/offset combinations on new panels. */
     g_st7789_cfg.x_offset = x_off;
     g_st7789_cfg.y_offset = y_off;
     (void)st7789_cmd_data(0x36U, &madctl, 1U);
@@ -472,6 +495,7 @@ static void st7789_set_view_config(uint8_t madctl, uint16_t x_off, uint16_t y_of
 static int st7789_addr_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
 {
     uint8_t data[4];
+    /* Convert logical 135x240 coordinates into panel RAM coordinates. */
     uint16_t panel_x0 = (uint16_t)(x0 + g_st7789_cfg.x_offset);
     uint16_t panel_x1 = (uint16_t)(x1 + g_st7789_cfg.x_offset);
     uint16_t panel_y0 = (uint16_t)(y0 + g_st7789_cfg.y_offset);
@@ -480,6 +504,7 @@ static int st7789_addr_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1
     if (st7789_cmd(0x2AU) != 0) {
         return -1;
     }
+    /* CASET, RASET, then RAMWR are the standard ST7789 address-window flow. */
     data[0] = (uint8_t)(panel_x0 >> 8U);
     data[1] = (uint8_t)panel_x0;
     data[2] = (uint8_t)(panel_x1 >> 8U);
@@ -532,6 +557,7 @@ static void st7789_fill_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uin
         h = (uint16_t)(g_st7789_cfg.height - y);
     }
 #if !ST7789_SOFT_SPI_ENABLE
+    /* Hardware SPI can reuse one encoded scanline instead of per-pixel writes. */
     uint8_t line[240 * 2];
 
     if (w > (uint16_t)(sizeof(line) / 2U)) {
@@ -584,6 +610,7 @@ static void st7789_draw_char_fast(uint16_t x, uint16_t y, const uint8_t *glyph, 
         (uint32_t)y + ST7789_FONT6X8_HEIGHT > g_st7789_cfg.height) {
         return;
     }
+    /* Build a tiny RGB565 tile and send it as one RAM window. */
     for (row = 0U; row < ST7789_FONT6X8_HEIGHT; row++) {
         for (col = 0U; col < ST7789_FONT6X8_WIDTH; col++) {
             uint16_t color = ((glyph[col] >> row) & 0x01U) != 0U ? fg : bg;
@@ -619,6 +646,7 @@ static void st7789_draw_text(uint16_t x, uint16_t y, const char *text, uint16_t 
     if (text == NULL) {
         return;
     }
+    /* Fallback text is deliberately short: enough for boot/status diagnostics. */
     for (i = 0U; text[i] != '\0' && i < ST7789_MAX_TEXT_LEN; i++) {
         st7789_draw_char(cursor, y, text[i], fg, bg);
         cursor = (uint16_t)(cursor + ST7789_TEXT_ADVANCE_X);
@@ -630,6 +658,7 @@ static void st7789_draw_text(uint16_t x, uint16_t y, const char *text, uint16_t 
 
 static void st7789_init_pins(void)
 {
+    /* Put every display signal under GPIO control before the panel reset pulse. */
     (void)uapi_pin_set_mode(g_st7789_cfg.cs_pin, HAL_PIO_FUNC_GPIO);
     (void)uapi_gpio_set_dir(g_st7789_cfg.cs_pin, GPIO_DIRECTION_OUTPUT);
     st7789_cs(0U);
@@ -652,6 +681,7 @@ static void st7789_init_pins(void)
 
 static void st7789_hw_reset(void)
 {
+    /* ST7789 reset timing is intentionally conservative for cold power-up. */
     st7789_cs(0U);
     (void)uapi_gpio_set_val(g_st7789_cfg.reset_pin, GPIO_LEVEL_HIGH);
     osal_msleep(5);
@@ -665,6 +695,7 @@ static void st7789_hw_reset(void)
 static int st7789_spi_init(void)
 {
 #if ST7789_SOFT_SPI_ENABLE
+    /* GPIO soft-SPI needs no SDK SPI controller setup. */
     return 0;
 #else
     spi_attr_t attr = {0};
@@ -689,6 +720,10 @@ static int st7789_spi_init(void)
 static int st7789_init_sequence(void)
 {
 #if ST7789_FULL_INIT_SEQ_ENABLE
+    /*
+     * Full panel bring-up sequence: sleep out, RGB565, orientation, porch/gate/
+     * power/gamma tuning, inversion, normal display, then display on.
+     */
     static const uint8_t cmd_b2[] = {0x0CU, 0x0CU, 0x00U, 0x33U, 0x33U};
     static const uint8_t cmd_b7[] = {0x35U};
     static const uint8_t cmd_bb[] = {0x1FU};
@@ -768,6 +803,7 @@ static int st7789_init_sequence(void)
     osal_msleep(20);
     return 0;
 #else
+    /* Minimal bring-up kept as an emergency fallback for unknown ST7789 boards. */
     if (st7789_cmd(0x01U) != 0) {
         return -1;
     }
@@ -813,6 +849,7 @@ static int st7789_push_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, cons
     if (st7789_addr_window(x, y, (uint16_t)(x + w - 1U), (uint16_t)(y + h - 1U)) != 0) {
         return -1;
     }
+    /* LVGL hands us raw RGB565 pixels; the panel wants the same layout. */
     st7789_dc(1U);
     st7789_cs(1U);
     for (row = 0U; row < h; row++) {
@@ -842,6 +879,7 @@ static int st7789_push_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, cons
 #if LVGL_VERSION_MAJOR >= 9
 static void st7789_lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
 {
+    /* Flush callback: push one LVGL dirty rectangle to the panel. */
     uint16_t x = (uint16_t)area->x1;
     uint16_t y = (uint16_t)area->y1;
     uint16_t w = (uint16_t)(area->x2 - area->x1 + 1);
@@ -852,6 +890,7 @@ static void st7789_lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint
 #else
 static void st7789_lvgl_flush_cb(lv_disp_drv_t *disp_drv, const lv_area_t *area, lv_color_t *color_p)
 {
+    /* LVGL v8 uses the same rectangle flush contract with a different type. */
     uint16_t x = (uint16_t)area->x1;
     uint16_t y = (uint16_t)area->y1;
     uint16_t w = (uint16_t)(area->x2 - area->x1 + 1);
@@ -866,6 +905,7 @@ static void st7789_lvgl_create_ui(void)
     lv_obj_t *root = lv_scr_act();
     uint16_t panel_w = g_st7789_cfg.width > 18U ? (uint16_t)(g_st7789_cfg.width - 18U) : g_st7789_cfg.width;
 
+    /* Build a two-card dashboard: compact status above, event feed below. */
     lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_bg_color(root, lv_color_hex(0x020617), LV_PART_MAIN);
     lv_obj_set_style_bg_grad_color(root, lv_color_hex(0x0F172A), LV_PART_MAIN);
@@ -874,7 +914,7 @@ static void st7789_lvgl_create_ui(void)
     lv_obj_set_style_pad_all(root, 0, LV_PART_MAIN);
 
     g_st7789_lv_accent_rail = lv_obj_create(root);
-    st7789_lvgl_style_rail(g_st7789_lv_accent_rail, 0x22C55E);
+    st7789_lvgl_style_rail(g_st7789_lv_accent_rail, 0x38BDF8);
     lv_obj_set_size(g_st7789_lv_accent_rail, 4, (lv_coord_t)(g_st7789_cfg.height > 8U ? g_st7789_cfg.height - 8U : 1U));
     lv_obj_align(g_st7789_lv_accent_rail, LV_ALIGN_TOP_LEFT, 3, 4);
 
@@ -915,6 +955,7 @@ static void st7789_lvgl_create_ui(void)
 
 static void st7789_lvgl_flush_now(void)
 {
+    /* Force an immediate paint after boot or a large status change. */
     if (g_st7789_lv_display == NULL) {
         return;
     }
@@ -930,6 +971,7 @@ static int st7789_lvgl_init(void)
     if (buf_lines == 0U) {
         buf_lines = 16U;
     }
+    /* LVGL is optional; if it is present, keep the buffer modest for RAM use. */
     lv_init();
     if (buf_lines > g_st7789_cfg.height) {
         buf_lines = g_st7789_cfg.height;
@@ -979,6 +1021,7 @@ int ws63_st7789_init(const ws63_st7789_config_t *cfg)
     if (cfg == NULL || cfg->width == 0U || cfg->height == 0U) {
         return -1;
     }
+    /* Public entry point: copy caller config, reset panel, then start UI. */
     (void)memcpy_s(&g_st7789_cfg, sizeof(g_st7789_cfg), cfg, sizeof(*cfg));
     g_st7789_ready = 0U;
     st7789_init_pins();
@@ -1009,10 +1052,10 @@ int ws63_st7789_init(const ws63_st7789_config_t *cfg)
     if (g_st7789_lv_ready != 0U) {
         st7789_lvgl_flush_now();
     } else {
-        st7789_draw_text(4U, 8U, "SLE boot", ST7789_COLOR_GREEN, ST7789_COLOR_BLACK);
+        st7789_draw_text(4U, 8U, "SLE boot", ST7789_COLOR_CYAN, ST7789_COLOR_BLACK);
     }
 #else
-    st7789_draw_text(4U, 8U, "SLE boot", ST7789_COLOR_GREEN, ST7789_COLOR_BLACK);
+    st7789_draw_text(4U, 8U, "SLE boot", ST7789_COLOR_CYAN, ST7789_COLOR_BLACK);
 #endif
     g_st7789_status_cache_valid = 0U;
     (void)memset_s(g_st7789_last_role, sizeof(g_st7789_last_role), 0, sizeof(g_st7789_last_role));
@@ -1044,6 +1087,7 @@ int ws63_st7789_show_status(const char *role, const char *self, uint8_t online_c
     if (g_st7789_ready == 0U) {
         return -1;
     }
+    /* Status updates are cached so the display task stays cheap when idle. */
     if (g_st7789_status_cache_valid != 0U &&
         g_st7789_last_online_count == online_count &&
         g_st7789_last_offline_count == offline_count &&
@@ -1055,7 +1099,7 @@ int ws63_st7789_show_status(const char *role, const char *self, uint8_t online_c
     }
 #if SLE_TEAM_USE_LVGL_BACKEND
     if (g_st7789_lv_ready != 0U) {
-        uint32_t status_color = offline_count == 0U ? 0x22C55E : 0xF97316;
+        uint32_t status_color = offline_count == 0U ? 0x38BDF8 : 0xF97316;
 
         if (g_st7789_lv_accent_rail != NULL) {
             lv_obj_set_style_bg_color(g_st7789_lv_accent_rail, lv_color_hex(status_color), LV_PART_MAIN);
@@ -1073,7 +1117,7 @@ int ws63_st7789_show_status(const char *role, const char *self, uint8_t online_c
             lv_label_set_text(g_st7789_lv_label_status, line);
         }
     } else {
-        uint16_t status_color = offline_count == 0U ? ST7789_COLOR_GREEN : ST7789_COLOR_ORANGE;
+        uint16_t status_color = offline_count == 0U ? ST7789_COLOR_CYAN : ST7789_COLOR_ORANGE;
 
         st7789_fill_rect(0U, 0U, g_st7789_cfg.width, 50U, ST7789_COLOR_NAVY);
         st7789_fill_rect(0U, 0U, 4U, 50U, status_color);
@@ -1085,7 +1129,7 @@ int ws63_st7789_show_status(const char *role, const char *self, uint8_t online_c
     }
 #else
     {
-        uint16_t status_color = offline_count == 0U ? ST7789_COLOR_GREEN : ST7789_COLOR_ORANGE;
+        uint16_t status_color = offline_count == 0U ? ST7789_COLOR_CYAN : ST7789_COLOR_ORANGE;
 
         st7789_fill_rect(0U, 0U, g_st7789_cfg.width, 50U, ST7789_COLOR_NAVY);
         st7789_fill_rect(0U, 0U, 4U, 50U, status_color);
@@ -1117,6 +1161,7 @@ int ws63_st7789_show_event(uint8_t event, const char *member_label, int32_t lati
     if (g_st7789_ready == 0U) {
         return -1;
     }
+    /* Event cards carry the last known coordinates when the node has them. */
 #if SLE_TEAM_USE_LVGL_BACKEND
     if (g_st7789_lv_ready != 0U && g_st7789_lv_label_event != NULL) {
         char event_line[ST7789_MAX_TEXT_LEN];
@@ -1170,6 +1215,7 @@ void ws63_st7789_tick(void)
     if (g_st7789_ready == 0U) {
         return;
     }
+    /* Keep LVGL timing in the display task, never in the network task. */
     now_ms = uapi_tcxo_get_ms();
     delta_ms = now_ms - g_st7789_last_tick_ms;
     if (delta_ms == 0U) {
